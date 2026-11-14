@@ -62,6 +62,10 @@ for _ in $(seq 300); do
 done
 [ "$("$adb" shell getprop sys.boot_completed | tr -d '\r')" = 1 ] || { echo "emulator-run: the emulator did not boot in 5 minutes" >&2; exit 1; }
 
+# the setup screen's tests need its window in front: the display awake and no lock screen over it
+"$adb" shell svc power stayon true
+"$adb" shell input keyevent KEYCODE_WAKEUP
+"$adb" shell wm dismiss-keyguard
 # Espresso's own advice: no animations on the device under test
 for scale in window_animation_scale transition_animation_scale animator_duration_scale; do "$adb" shell settings put global "$scale" 0; done
 "$adb" logcat -c

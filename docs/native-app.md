@@ -681,9 +681,9 @@ format signing in, the host-key rule, the password-once registration and its rem
 gate and stop) and `SshSetupFlowTest` (the setup screen with a pasted, passphrase-protected key);
 `--bare` adds the first install on a fixture with neither herdr nor Ovis.
 
-Size: the debug APK is SIZE-DEBUG. The SSH library (sshlib, Tink, the Kyber KEM) adds 1.03 MB to the
+Size: the debug APK is 55,906,488 bytes (53.3 MB). The SSH library (sshlib, Tink, the Kyber KEM) adds 1.03 MB to the
 release APK (measured for the prototype: 47,906,469 bytes against 46,874,305, minify off as before); the
-product code adds SIZE-CODE of classes.
+app's own SSH classes are 138 KB of bytecode.
 
 Not tried yet: a real phone (only the emulator, Android 15 with Google APIs), a real Wi-Fi to mobile data switch, push alerts
 from an SSH PC (they come from the PC's own Ovis, so they should work, unchecked), a PC whose Ovis
