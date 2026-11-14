@@ -152,7 +152,8 @@ export function SetupGuide(props: SetupGuideProps) {
   }, [begun, machineId]); // eslint-disable-line react-hooks/exhaustive-deps
   const check: PcCheck = { checking, catalog, failed: catalogError !== null };
   // the step shown once the guide is begun: the head's list of steps and the body follow it; the welcome starts it over
-  const [page, setPage] = useState<GuidePage>("agent");
+  // opened again at a later step (the sidebar's Setup: N left) starts there
+  const [page, setPage] = useState<GuidePage>(state.at ?? "agent");
   useEffect(() => { if (state.step === "welcome") setPage("agent"); }, [state.step]);
   const view = setupView(check);
 
@@ -381,6 +382,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
   useEffect(() => { if (chosen === null && page !== "agent") setPage("agent"); }, [chosen === null, page]); // eslint-disable-line react-hooks/exhaustive-deps
   // the step shown: the agents, or Done with its Start
   const pageBefore = useRef(page);
+  useEffect(() => { if (page === "done" && chosen === null) setPage("agent"); }, [page, chosen]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (pageBefore.current === page) return;
     pageBefore.current = page;
@@ -484,11 +486,13 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
   const errorLine = error !== null && <p className="setup-error" role="alert">{error}</p>;
   const signInDialog = signingIn && <UsageSignInDialog request={signingIn} onOpenTerminal={(paneId) => { setSigningIn(null); onOpenTerminal(paneId); }} onSignedIn={() => setSignedHere((done) => [...done, signingIn.provider])} onClose={() => setSigningIn(null)} />;
 
-  if (page === "theme" && chosen !== null) return (
+  // the theme and the phone need no agent (the sidebar's Setup: N left opens the guide at them on a PC with only a
+  // shell); Start and Done do
+  if (page === "theme") return (
     <>
       <ThemeStep firstFocus={firstFocus}>{errorLine}{notice}</ThemeStep>
       <footer className="modal-footer setup-foot">
-        {madeWithout === null && <button type="button" className="btn btn-ghost" disabled={opening} onClick={() => void start()}>{t("Start now, finish setup later")}</button>}
+        {madeWithout === null && chosen !== null && <button type="button" className="btn btn-ghost" disabled={opening} onClick={() => void start()}>{t("Start now, finish setup later")}</button>}
         <button type="button" className="btn" disabled={locked} onClick={() => setPage("agent")}><ChevronLeft aria-hidden="true" />{t("Back")}</button>
         {madeWithout !== null
           ? <button type="button" className="btn btn-primary" onClick={() => void start()}><Play aria-hidden="true" />{t("Open the workspace")}</button>
@@ -497,7 +501,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
     </>
   );
 
-  if (page === "phone" && chosen !== null) return (
+  if (page === "phone") return (
     <>
       <div className="modal-body setup-body">
         <div className="setup-main">
@@ -519,11 +523,13 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
         </aside>
       </div>
       <footer className="modal-footer setup-foot">
-        {madeWithout === null && <button type="button" className="btn btn-ghost" disabled={opening} onClick={() => void start()}>{t("Start now, finish setup later")}</button>}
+        {madeWithout === null && chosen !== null && <button type="button" className="btn btn-ghost" disabled={opening} onClick={() => void start()}>{t("Start now, finish setup later")}</button>}
         <button type="button" className="btn" disabled={locked} onClick={() => setPage("theme")}><ChevronLeft aria-hidden="true" />{t("Back")}</button>
         {madeWithout !== null
           ? <button type="button" className="btn btn-primary" onClick={() => void start()}><Play aria-hidden="true" />{t("Open the workspace")}</button>
-          : <button type="button" className="btn btn-primary" disabled={locked} onClick={() => setPage("done")}>{t("Continue")}<ArrowRight aria-hidden="true" /></button>}
+          : chosen === null
+            ? <button type="button" className="btn btn-primary" onClick={onClose}>{t("Done")}</button>
+            : <button type="button" className="btn btn-primary" disabled={locked} onClick={() => setPage("done")}>{t("Continue")}<ArrowRight aria-hidden="true" /></button>}
       </footer>
     </>
   );

@@ -4,7 +4,7 @@ import { AGENT_CATALOG, catalogRow, type AgentCatalogRow, type AgentInstallState
 import type { HealthAuth, RelayStatus } from "../../shared/protocol.ts";
 import type { ProviderUsage } from "../../shared/usage.ts";
 import { onSetupGuideRequest, openSetupGuide } from "./setupGuide.ts";
-import { agentRows, autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, INSTALL_GIVE_UP_MS, installedHere, openInFolder, otherDevice, phoneBoxMode, phoneBoxOpensFirst, phoneBoxStays, phoneWay, preferredAgent, readGuide, readSignedIn, relayStep, REOPENED, saveGuide, settleDelay, setupView, signedInAgents, tileState, turnsUsageOn, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
+import { agentRows, autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, INSTALL_GIVE_UP_MS, installedHere, openInFolder, otherDevice, phoneBoxMode, phoneBoxOpensFirst, phoneBoxStays, phoneWay, preferredAgent, GUIDE_STORAGE_KEY, readGuide, readSignedIn, relayStep, REOPENED, saveGuide, settleDelay, setupLeft, setupView, signedInAgents, tileState, turnsUsageOn, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
 
 const FRESH: FreshFacts = { workspaces: 0, savedSettings: false, sharedRevision: 0, pairingGate: "open", watching: false };
 
@@ -56,6 +56,11 @@ describe("readGuide and saveGuide", () => {
     expect(readGuide(storage)).toBeNull();
     saveGuide(storage, REOPENED);
     expect(readGuide(storage)).toEqual({ status: "open", state: REOPENED });
+    // reopened at a later step, from the sidebar's Setup: N left: a reload resumes there
+    saveGuide(storage, { ...REOPENED, at: "phone" });
+    expect(readGuide(storage)).toEqual({ status: "open", state: { ...REOPENED, at: "phone" } });
+    storage.setItem(GUIDE_STORAGE_KEY, JSON.stringify({ status: "open", state: { ...REOPENED, at: "elsewhere" } }));
+    expect(readGuide(storage)).toEqual({ status: "closed" });
     saveGuide(storage, null);
     expect(readGuide(storage)).toEqual({ status: "closed" });
   });
@@ -162,13 +167,14 @@ describe("openSetupGuide", () => {
     const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
     Object.defineProperty(globalThis, "window", { configurable: true, value: new EventTarget() });
     try {
-      let calls = 0;
-      const stop = onSetupGuideRequest(() => { calls += 1; });
+      const asked: unknown[] = [];
+      const stop = onSetupGuideRequest((at) => { asked.push(at); });
       openSetupGuide();
-      expect(calls).toBe(1);
+      openSetupGuide("phone");
+      expect(asked).toEqual([undefined, "phone"]);
       stop();
       openSetupGuide();
-      expect(calls).toBe(1);
+      expect(asked).toHaveLength(2);
     } finally {
       if (saved) Object.defineProperty(globalThis, "window", saved);
       else Reflect.deleteProperty(globalThis, "window");
@@ -373,5 +379,15 @@ describe("otherDevice", () => {
     // this browser paired itself (the relay's start, Pair this device): no phone yet
     expect(otherDevice([device("self", true)])).toBeNull();
     expect(otherDevice([device("self", true), device("phone", false)])).toBe("device phone");
+  });
+});
+
+describe("setupLeft", () => {
+  it("counts the agent, the theme, the phone and the alerts, and opens the guide at the first one left", () => {
+    expect(setupLeft({ workspace: true, phone: true, alerts: true })).toEqual({ done: 4, total: 4, at: null });
+    expect(setupLeft({ workspace: true, phone: false, alerts: true })).toEqual({ done: 3, total: 4, at: "phone" });
+    expect(setupLeft({ workspace: true, phone: true, alerts: false })).toEqual({ done: 3, total: 4, at: "phone" });
+    // a theme is always drawn: it is never left
+    expect(setupLeft({ workspace: false, phone: false, alerts: false })).toEqual({ done: 1, total: 4, at: "agent" });
   });
 });

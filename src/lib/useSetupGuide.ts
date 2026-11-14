@@ -4,6 +4,7 @@ import { fetchDevices, fetchPreferences } from "./api.ts";
 import { onSetupGuideRequest } from "./setupGuide.ts";
 import { autoOpen, otherDevice, GUIDE_STORAGE_KEY, guideStep, readGuide, readSignedIn, REOPENED, saveGuide, WELCOME, type GuideEvent, type GuideState } from "./setupGuideFlow.ts";
 import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
+import { setupRowOn } from "./firstHints.ts";
 
 const storage = (): Storage | null => {
   try { return window.localStorage; } catch { return null; }
@@ -65,9 +66,9 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching }: Se
   }, [enabled, workspaces, sharedRevision, pairingGate, watching, savedSettings]);
 
   useEffect(() => {
-    const reopen = () => {
+    const reopen = (at: GuideState["at"]) => {
       if (watchingRef.current || !enabledRef.current) return;
-      decided.current = true; setSettled(true); openedHere.current = true; setGuide(REOPENED); setPaused(false);
+      decided.current = true; setSettled(true); openedHere.current = true; setGuide(at === undefined ? REOPENED : { ...REOPENED, at }); setPaused(false);
     };
     // closed in another tab of this browser: closed here too, read from the event itself (storage may
     // already hold this tab's own later write)
@@ -106,14 +107,18 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching }: Se
   const stepAside = useCallback(() => { if (openRef.current) { pausedRef.current = true; setPaused(true); } }, []);
 
   const dispatch = useCallback((event: GuideEvent) => setGuide((current) => current === null ? null : guideStep(current, event)), []);
+  const guideRef = useRef(guide);
+  guideRef.current = guide;
   const close = useCallback(() => {
     // a pane picked right after closing (Done's first workspace) finds it closed, not open
     openRef.current = false;
+    // a guide begun and closed: the sidebar's Setup: N left may say what it left (components/SetupProgressRow.tsx)
+    const begun = guideRef.current?.step === "setup";
     tickets.current += 1;
     setGuide(null);
     setPaused(false);
     const store = storage();
-    if (store !== null) saveGuide(store, null);
+    if (store !== null) { saveGuide(store, null); if (begun) setupRowOn(store); }
   }, []);
   const resume = useCallback(() => { pausedRef.current = false; setPaused(false); }, []);
   // turned into a watching device (its pairing changed): an open guide goes, without closing it for this browser

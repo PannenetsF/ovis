@@ -214,6 +214,8 @@ try {
           await dialog.waitFor({ state: "detached" });
           await page.waitForFunction((count) => document.querySelectorAll(".workspace-group[data-workspace]").length > count, before);
           assert.equal(JSON.parse((await page.evaluate(() => localStorage.getItem("ovis:setup-guide"))) ?? "{}").status, "closed", `the fast path closes the guide ${at}`);
+          // a first run whose agent started: the first-start hints wait for its workspace, and the sidebar's setup row may show
+          assert.deepEqual(await page.evaluate(() => [localStorage.getItem("ovis:first-hints"), localStorage.getItem("ovis:setup-row")]), ["pending", "on"], `the fast path arms the hints and the setup row ${at}`);
           await shot("6-started");
           console.log(`PASS the guide is a 1200x675 dialog, keyboard inside it, and the fast path opens the first workspace in two clicks (${at})`);
 

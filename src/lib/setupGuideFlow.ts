@@ -16,6 +16,8 @@ export interface GuideState {
   step: "welcome" | "setup";
   /** opened again from Settings: it changes no setting by itself (turnsUsageOn) */
   reopened?: true;
+  /** opened again at a later step than the agent's (the sidebar's Setup: N left) */
+  at?: "theme" | "phone";
 }
 
 /** I'm new to Ovis; Back from the first step to the welcome */
@@ -259,6 +261,7 @@ function readState(value: unknown): GuideState | null {
   // the old multi-step guide's record (its outcomes, plan and agent) is no guide to show, even at its welcome
   const keys = Object.keys(value);
   if (keys.length === 2 && value["step"] === "setup" && value["reopened"] === true) return REOPENED;
+  if (keys.length === 3 && value["step"] === "setup" && value["reopened"] === true && (value["at"] === "theme" || value["at"] === "phone")) return { ...REOPENED, at: value["at"] };
   if (keys.length !== 1) return null;
   return value["step"] === "welcome" || value["step"] === "setup" ? { step: value["step"] } : null;
 }
@@ -290,4 +293,27 @@ export function saveGuide(storage: Pick<Storage, "setItem">, state: GuideState |
 /** The name of a device paired here other than this browser (a phone, another PC's browser), or null: what the guide counts as a phone. */
 export function otherDevice(devices: readonly PairedDevice[]): string | null {
   return devices.find((device) => !device.current)?.label ?? null;
+}
+
+/** What the guide sets up, as the sidebar's Setup: N left counts it, each done or not by what the app knows now. */
+export interface SetupFacts {
+  /** this PC has a workspace: an agent was started here */
+  workspace: boolean;
+  /** a device other than this browser is paired (otherDevice); the device gate says nothing of it, as a relay start or this browser pairing itself closes it too */
+  phone: boolean;
+  /** this browser's alerts are on and the browser allows them, or the page can have none (plain http): nothing to set */
+  alerts: boolean;
+}
+
+export interface SetupLeft {
+  done: number;
+  total: number;
+  /** where the guide opens to finish: the first step not done */
+  at: "agent" | "phone" | null;
+}
+
+/** The setup's four parts (agent, theme, phone, alerts) and how many are done; a theme always is, as one is always drawn. */
+export function setupLeft(facts: SetupFacts): SetupLeft {
+  const parts = [facts.workspace, true, facts.phone, facts.alerts];
+  return { done: parts.filter(Boolean).length, total: parts.length, at: !facts.workspace ? "agent" : !facts.phone || !facts.alerts ? "phone" : null };
 }

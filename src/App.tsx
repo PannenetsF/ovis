@@ -17,7 +17,10 @@ import { AccessGate } from "./components/AccessGate.tsx";
 import { AgentMark } from "./components/AgentMark.tsx";
 import { NewSessionDialog } from "./components/NewSessionDialog.tsx";
 import { SetupGuide, SetupGuideResume } from "./components/SetupGuide.tsx";
-import { useSetupGuide } from "./lib/useSetupGuide.ts";
+import { useOtherDevice, useSetupGuide } from "./lib/useSetupGuide.ts";
+import { armHints } from "./lib/firstHints.ts";
+import { SetupProgressRow } from "./components/SetupProgressRow.tsx";
+import { FirstStartHints } from "./components/FirstStartHints.tsx";
 import { SessionHistory } from "./components/SessionHistory.tsx";
 import { WorktreeRequestDialog } from "./components/WorktreeDialog.tsx";
 import { worktreesStartHere } from "./lib/repositoryWorkspaces.ts";
@@ -360,6 +363,13 @@ export function App() {
     watching: auth?.role === "watch",
   });
   const guideShown = setupGuide.guide !== null && !setupGuide.paused;
+  // the sidebar's Setup: N left (components/SetupProgressRow.tsx), once the guide is gone; the phone is another
+  // device on the server's list, read again when one pairs (pairedNotices)
+  const rowFacts = setupGuide.guide === null && auth?.role !== "watch" && localSnapshot !== null;
+  const otherDevicePaired = useOtherDevice(rowFacts, pairedNotices.length);
+  const setupRow = rowFacts
+    ? <SetupProgressRow facts={{ workspace: localSnapshot.workspaces.length > 0, phone: otherDevicePaired !== null, alerts: notifications === "unsupported" || (alertsOn && notifications === "granted") }} />
+    : null;
   // the mode's shell. The setup guide stands in the pane's place before any workspace exists: it keeps the classic one
   const inMode = inboxMode.on && !guideShown;
   inboxMode.drawerBlocked.current = inMode;
@@ -1297,7 +1307,7 @@ export function App() {
           <RenderBoundary resetKey={null} fallback={(retry) => <RegionCrash message={t("The sidebar can't be shown.")} retry={retry} />}>
             <CrashProbe region="sidebar" />
             <ReorderContext.Provider value={reorderCoordinator}><MachineSidebar machines={sidebarMachines} allMachines={machines} watching={auth?.role === "watch"} appLayout={appLayoutOn} drawerOpen={drawerOpen} filterRequest={sidebarFilterRequest} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} activity={activity} actions={actions} onSelect={selectTarget} onUsageLogin={(paneId) => { selectTarget("local", paneId, "terminal"); void load(); }} onSetup={(machine, update = false) => { setUpdateRemote(update); setMachineDialog(machine); }} onNew={openNewOn}
-              footerStart={modeOffered ? <InboxFootEntry onOpen={enterInbox} /> : undefined} /></ReorderContext.Provider>
+              footerStart={<>{setupRow}{modeOffered && <InboxFootEntry onOpen={enterInbox} />}</>} /></ReorderContext.Provider>
           </RenderBoundary>
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>}
@@ -1329,6 +1339,8 @@ export function App() {
         {/* the pane's tab, or two tabs side by side (lib/split.ts): a tab dragged down out of its strip,
             or a sidebar row dragged over this area, opens its pane in the half it is dropped on */}
         {/* kept mounted while it steps aside, so a sign-in or a workspace being made goes on where it was; it is this PC's setup */}
+        {/* mounted once the guide is gone, so a first run's arming (onOpened, below) is read afresh */}
+        {setupGuide.guide === null && <FirstStartHints active={locked === false} />}
         {setupGuide.guide !== null && <MachineContext.Provider value="local"><SetupGuide auth={auth} security={security} onEnableAlerts={enableNotifications} settingsOpen={settingsOpen} notifications={notifications} hidden={setupGuide.paused} state={setupGuide.guide} dispatch={setupGuide.dispatch} onClose={setupGuide.close} onOpenSettings={(page) => { setSettingsLinkPage(page); setSettingsOpen(true); }}
           onOpenTelemetry={() => { setSettingsLinkPage("about"); setSettingsLinkSection("telemetry"); setSettingsOpen(true); }}
           // the tab was just made: picked before the roster has it, the pick would be released as a closed pane
@@ -1337,7 +1349,9 @@ export function App() {
           onOpenTerminal={(paneId) => { const at = picks.current; const latest = setupGuide.ticket(); void load().finally(() => { if (latest() && picks.current === at) selectTarget("local", paneId, "terminal"); }); }}
           onStarting={setupGuide.voidTickets}
           onPaired={() => void loadHealth()}
-          onOpened={(paneId, agentStarted) => { if (agentStarted) actions.agentStarted("local", paneId); setupGuide.finish(() => selectTarget("local", paneId)); void load(); }} /></MachineContext.Provider>}
+          onOpened={(paneId, agentStarted) => { if (agentStarted) actions.agentStarted("local", paneId);
+            // the first run's agent is up: the three first-start hints come once its workspace shows
+            if (agentStarted && setupGuide.guide?.reopened !== true) { try { armHints(window.localStorage); } catch { /* no storage: no hints */ } } setupGuide.finish(() => selectTarget("local", paneId)); void load(); }} /></MachineContext.Provider>}
         {guideShown ? null :
         <div ref={paneAreaRef} className={`pane-split${paneSplit ? " is-split" : ""}${inbox.shown ? " is-under-inbox" : ""}`} onDragEnterCapture={paneDragOver} onDragOverCapture={paneDragOver} onDragLeave={paneDragLeave} onDropCapture={paneDrop}>
           {/* the wide thread's zone comes before its pane, after the column: the keyboard follows the drawn order */}
