@@ -1,7 +1,7 @@
 // The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
 // native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
 // there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
-import { ACCOUNT_SIGN_IN, APP_ORIGIN, localize, openFailure, parseAddress, publicHttp, relayLink, shell, t } from "./shell.js";
+import { ACCOUNT_SIGN_IN, APP_ORIGIN, localize, openFailure, parseAddress, publicHttp, relayLink, shell, sshDetails, t } from "./shell.js";
 
 localize();
 
@@ -41,6 +41,13 @@ function stopPending() {
 /** PCs that loaded before (an origin, or a relay PC's scope), and the public http address the user was just warned about. */
 let savedOrigins = [];
 let warned = "";
+/** The PCs added over SSH (Android's OvisSsh plugin), by their loopback origin on this phone. */
+let sshPcs = {};
+
+/** Calls Android's OvisSsh plugin (app/android/.../OvisSshPlugin.java). */
+function ssh(method, options = {}) {
+  return window.Capacitor.nativePromise("OvisSsh", method, options);
+}
 
 const appHost = new URL(APP_ORIGIN).host;
 const relayErrors = {
@@ -61,6 +68,14 @@ const relayErrors = {
 async function open(text) {
   // another address, or the same again: an open still being checked gives way, whatever this one does
   stopPending();
+  // an SSH PC whose host key was forgotten on purpose opens only through the setup screen, which shows the key to confirm
+  const sshPc = sshPcs[text];
+  if (sshPc && !sshDetails(sshPc).confirmed) {
+    error.textContent = "";
+    try { await ssh("setUp", { origin: text }); }
+    catch (err) { error.textContent = String(err?.message ?? err); }
+    return;
+  }
   const url = parseAddress(text);
   if (url === null) { error.textContent = t("That is not an http or https address.", "http 또는 https 주소가 아닙니다."); input.focus(); return; }
   // a PC paired over the Ovis relay opens at its scope on the app's origin, saved under that scope
@@ -109,12 +124,12 @@ if (ACCOUNT_SIGN_IN) {
 }
 
 // a machine reached over SSH (Android's OvisSshPlugin): its own screen asks the rest
-const ssh = document.getElementById("ssh");
+const addSsh = document.getElementById("ssh");
 if (android) {
-  ssh.hidden = false;
-  ssh.addEventListener("click", async () => {
+  addSsh.hidden = false;
+  addSsh.addEventListener("click", async () => {
     error.textContent = "";
-    try { await window.Capacitor.nativePromise("OvisSsh", "add", {}); }
+    try { await ssh("add"); }
     catch (err) { error.textContent = String(err?.message ?? err); }
   });
 }
@@ -130,24 +145,128 @@ document.getElementById("scan").addEventListener("click", async () => {
   }
 });
 
+function button(text, onClick, className = "") {
+  const element = document.createElement("button");
+  element.type = "button";
+  if (className) element.className = className;
+  element.textContent = text;
+  element.addEventListener("click", onClick);
+  return element;
+}
+
+function paragraph(text, className = "") {
+  const element = document.createElement("p");
+  if (className) element.className = className;
+  element.textContent = text;
+  return element;
+}
+
+/**
+ * Manage under an SSH PC in the list: what it is, and what can be done to it here. Each action says
+ * what happened in the panel's own line, so nothing happens out of sight.
+ */
+function managePanel(origin, label) {
+  const pc = sshPcs[origin];
+  const details = sshDetails(pc);
+  const panel = document.createElement("div");
+  panel.className = "manage";
+  panel.id = `manage-${origin.replace(/[^a-z0-9]/gi, "-")}`;
+  const said = paragraph("", "said");
+  said.setAttribute("role", "status");
+  const say = (text) => { said.textContent = text; };
+  const fail = (err) => { said.textContent = String(err?.message ?? err); };
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const extra = document.createElement("div");
+
+  const rename = button(t("Rename", "이름 바꾸기"), () => {
+    const input = document.createElement("input");
+    input.value = label;
+    input.maxLength = 64;
+    input.setAttribute("aria-label", t("Name in the list", "목록에 보일 이름"));
+    const save = button(t("Save", "저장"), async () => {
+      try { await ssh("rename", { origin, name: input.value }); await load(); }
+      catch (err) { fail(err); }
+    }, "primary");
+    extra.replaceChildren(input, save);
+    input.focus();
+  });
+  const phoneKey = button(t("Show this phone's key", "이 휴대폰의 키 보기"), async () => {
+    try {
+      const { line } = await ssh("phoneKey");
+      const code = document.createElement("code");
+      code.className = "key";
+      code.textContent = line;
+      const copy = button(t("Copy", "복사"), async () => { await ssh("copy", { text: line }); say(t("Copied.", "복사했습니다.")); });
+      extra.replaceChildren(paragraph(t("This phone signs in with this key. It goes in ~/.ssh/authorized_keys on the PC:", "이 휴대폰은 이 키로 로그인합니다. PC의 ~/.ssh/authorized_keys에 들어갑니다:")), code, copy);
+    } catch (err) { fail(err); }
+  });
+  const setUp = button(t("Set up again", "다시 설정"), async () => {
+    try { await ssh("setUp", { origin }); }
+    catch (err) { fail(err); }
+  });
+  const forgetKey = button(t("Forget host key", "호스트 키 지우기"), () => {
+    const yes = button(t("Forget it", "지우기"), async () => {
+      try { await ssh("forgetHostKey", { origin }); await load(); }
+      catch (err) { fail(err); }
+    }, "primary");
+    extra.replaceChildren(paragraph(t(
+      "Only when you know why the PC's SSH key changed (the machine was reinstalled, its keys replaced). Opening it then shows the key it has now, to check on the PC and confirm.",
+      "PC의 SSH 키가 왜 바뀌었는지 알 때만 지우세요(기기를 다시 설치했거나 키를 바꾼 경우). 그 뒤 열면 지금의 키를 보여 주니, PC에서 확인하고 신뢰하세요.",
+    )), yes);
+  });
+  const remove = button(t("Remove", "삭제"), () => {
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = `${panel.id}-clean`;
+    box.checked = pc.auth === "phone-key";
+    box.disabled = pc.auth !== "phone-key" || !details.confirmed;
+    const boxLabel = document.createElement("label");
+    boxLabel.className = "check";
+    boxLabel.htmlFor = box.id;
+    boxLabel.textContent = t("Also take this phone's key out of the PC's authorized_keys (the PC has to be reachable)", "PC의 authorized_keys에서도 이 휴대폰의 키를 빼기(PC에 닿아야 함)");
+    boxLabel.prepend(box);
+    const yes = button(t("Remove", "삭제"), async () => {
+      try {
+        const { remote, reason } = await ssh("remove", { origin, cleanRemote: box.checked });
+        await load();
+        if (remote === "failed") error.textContent = t(`${label} was removed from this phone, but its key could not be taken out of the PC (${reason}). Remove the line ending in ovis-phone there yourself.`, `${label}을(를) 이 휴대폰에서 지웠지만 PC에서 키를 빼지 못했습니다(${reason}). 그쪽에서 ovis-phone으로 끝나는 줄을 직접 지우세요.`);
+      } catch (err) { fail(err); }
+    }, "primary");
+    extra.replaceChildren(paragraph(t(`Remove ${label} from this phone? Its host key and the key saved for it go too.`, `이 휴대폰에서 ${label}을(를) 지울까요? 호스트 키와 이 PC용으로 저장한 키도 함께 지워집니다.`)), boxLabel, yes);
+  });
+  actions.append(rename, phoneKey, setUp, ...(details.confirmed ? [forgetKey] : []), remove);
+  panel.append(paragraph(details.address), paragraph(details.how), paragraph(details.hostKey, "key"), actions, extra, said);
+  return panel;
+}
+
 function renderSaved(saved, current, names) {
   const list = document.getElementById("saved");
   list.replaceChildren();
   for (const origin of saved) {
     const item = document.createElement("li");
-    const openButton = document.createElement("button");
-    openButton.type = "button";
-    openButton.className = "open";
-    const label = names[origin] ? `${names[origin]} (${new URL(origin).host})` : origin;
-    openButton.textContent = origin === current ? `${label} ${t("(last opened)", "(마지막으로 연 PC)")}` : label;
-    openButton.addEventListener("click", () => void open(origin));
-    const forget = document.createElement("button");
-    forget.type = "button";
-    forget.className = "forget";
-    forget.textContent = t("Forget", "지우기");
-    forget.setAttribute("aria-label", t(`Forget ${label}`, `${label} 지우기`));
-    forget.addEventListener("click", async () => { await shell("forget", { url: origin }); await load(); });
-    item.append(openButton, forget);
+    const sshPc = sshPcs[origin];
+    const label = names[origin] ? (sshPc ? names[origin] : `${names[origin]} (${new URL(origin).host})`) : (sshPc ? `${sshPc.label} (SSH)` : origin);
+    const openButton = button(origin === current ? `${label} ${t("(last opened)", "(마지막으로 연 PC)")}` : label, () => void open(origin), "open");
+    if (sshPc) {
+      // an SSH PC is managed rather than only forgotten: its key and host key live on this phone
+      const manage = button(t("Manage", "관리"), () => {
+        const shown = item.nextElementSibling?.classList.contains("manage-row");
+        if (shown) { item.nextElementSibling.remove(); manage.setAttribute("aria-expanded", "false"); return; }
+        const row = document.createElement("li");
+        row.className = "manage-row";
+        row.append(managePanel(origin, label));
+        item.after(row);
+        manage.setAttribute("aria-expanded", "true");
+      }, "forget");
+      manage.setAttribute("aria-expanded", "false");
+      manage.setAttribute("aria-label", t(`Manage ${label}`, `${label} 관리`));
+      item.append(openButton, manage);
+    } else {
+      const forget = button(t("Forget", "지우기"), async () => { await shell("forget", { url: origin }); await load(); }, "forget");
+      forget.setAttribute("aria-label", t(`Forget ${label}`, `${label} 지우기`));
+      item.append(openButton, forget);
+    }
     list.append(item);
   }
   document.getElementById("saved-section").hidden = saved.length === 0;
@@ -156,6 +275,11 @@ function renderSaved(saved, current, names) {
 async function load() {
   const state = await shell("getState");
   savedOrigins = state.saved ?? [];
+  sshPcs = {};
+  if (android) {
+    try { for (const pc of (await ssh("list")).pcs ?? []) sshPcs[pc.origin] = pc; }
+    catch { /* an app without the plugin lists its PCs as before */ }
+  }
   renderSaved(savedOrigins, state.last ?? "", state.names ?? {});
 }
 

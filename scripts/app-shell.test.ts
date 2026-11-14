@@ -4,7 +4,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 // @ts-expect-error app/web is plain JavaScript the app carries as is, without types
-import { APP_ORIGIN, homeHost, loopbackHost, openFailure, parseAddress, relayLink, tailnetHost } from "../app/web/shell.js";
+import { APP_ORIGIN, homeHost, loopbackHost, openFailure, parseAddress, relayLink, sshDetails, tailnetHost } from "../app/web/shell.js";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
 import { encodeOffer } from "../shared/relay-offer.ts";
 
@@ -129,5 +129,21 @@ describe("why an address did not open", () => {
     for (const code of ["not-ovis", "refused", "timeout", "unknown-host", "no-answer", undefined]) {
       expect([code, openFailure(url, code, "x").length > 0]).toEqual([code, true]);
     }
+  });
+});
+
+describe("an SSH PC under Manage", () => {
+  const pc = { origin: "http://127.0.0.2:47317", host: "studio.lan", port: 22, user: "me", auth: "phone-key", keyType: "", hostKeyAlgorithm: "ssh-ed25519", fingerprint: "SHA256:abc" };
+
+  it("names its address, how the phone signs in, and its confirmed host key", () => {
+    expect(sshDetails(pc)).toEqual({ address: "me@studio.lan", how: "Signs in with this phone's key", hostKey: "Host key ssh-ed25519 SHA256:abc", confirmed: true });
+    expect(sshDetails({ ...pc, port: 2222, auth: "imported", keyType: "rsa 3072" })).toMatchObject({ address: "me@studio.lan:2222", how: "Signs in with a pasted rsa 3072 key" });
+    expect(sshDetails({ ...pc, auth: "imported", keyType: "" }).how).toBe("Signs in with a pasted key");
+  });
+
+  it("is not confirmed once its host key was forgotten", () => {
+    const forgotten = sshDetails({ ...pc, hostKeyAlgorithm: "", fingerprint: "" });
+    expect(forgotten.confirmed).toBe(false);
+    expect(forgotten.hostKey).toStartWith("Host key forgotten");
   });
 });
