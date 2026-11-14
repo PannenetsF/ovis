@@ -20,8 +20,8 @@ import org.json.JSONObject;
 /**
  * The PCs added over SSH and this phone's own SSH key: the key store. Each PC is saved in PCStore under
  * its own loopback origin on this phone (`http://127.0.0.<n>:47317`, where SshTunnel listens); this
- * store keeps how to reach it: address, account, the host key confirmed when it was added, the gate
- * cookie, and how the app signs in. A distinct 127.0.0.n per PC keeps each PC's cookies and storage
+ * store keeps how to reach it: address, account, the host key confirmed when it was added, and how
+ * the app signs in (the gate cookie is the tunnel's, new each time it listens: SshTunnels). A distinct 127.0.0.n per PC keeps each PC's cookies and storage
  * apart, as cookies do not separate ports.
  *
  * <p>Secrets never rest in the clear: this phone's ed25519 seed, a pasted private key and its
@@ -89,8 +89,6 @@ final class SshPcs {
         String user;
         String hostKeyAlgorithm = "";
         String hostKey = "";
-        /** the secret cookie the WebView carries to the tunnel (SshTunnel): any other app on the phone lacks it */
-        String gate;
         /** "phone-key" or "imported" */
         String auth = "phone-key";
         /** sealed, "" unless auth is "imported" */
@@ -120,7 +118,6 @@ final class SshPcs {
                 .put("user", user)
                 .put("hostKeyAlgorithm", hostKeyAlgorithm)
                 .put("hostKey", hostKey)
-                .put("gate", gate)
                 .put("auth", auth)
                 .put("importedKey", importedKey)
                 .put("importedPassphrase", importedPassphrase)
@@ -135,7 +132,6 @@ final class SshPcs {
             pc.user = json.optString("user");
             pc.hostKeyAlgorithm = json.optString("hostKeyAlgorithm");
             pc.hostKey = json.optString("hostKey");
-            pc.gate = json.optString("gate");
             pc.auth = json.optString("auth", "phone-key");
             pc.importedKey = json.optString("importedKey", "");
             pc.importedPassphrase = json.optString("importedPassphrase", "");
@@ -221,13 +217,29 @@ final class SshPcs {
         return list;
     }
 
-    /** A loopback origin no saved SSH PC uses: 127.0.0.2 upward (127.0.0.1 stays for whatever else runs on the phone). */
+    /**
+     * A loopback origin for a new PC: 127.0.0.2 upward (127.0.0.1 stays for whatever else runs on the
+     * phone), after the last one handed out, so a PC added after another was removed never gets that
+     * one's address (its storage, drafts and service worker); only once all 253 were handed out does it
+     * come back round to the lowest free one.
+     */
     String freeOrigin() {
         synchronized (LOCK) {
             JSONObject pcs = all();
-            for (int n = 2; n < 255; n++) {
+            int last;
+            try {
+                last = Integer.parseInt(String.valueOf(prefs.get("lastLoopback")));
+            } catch (NumberFormatException none) {
+                last = 1;
+            }
+            for (int step = 1; step <= 253; step++) {
+                int n = 2 + (last - 2 + step + 253) % 253;
                 String origin = "http://127.0.0." + n + ":" + LOCAL_PORT;
-                if (!pcs.has(origin)) return origin;
+                if (pcs.has(origin)) continue;
+                Map<String, String> values = new HashMap<>();
+                values.put("lastLoopback", String.valueOf(n));
+                if (!prefs.put(values)) throw new IllegalStateException("This phone could not save its SSH PCs");
+                return origin;
             }
         }
         throw new IllegalStateException("No loopback address is left for another SSH PC");

@@ -40,4 +40,5 @@ li.manage-row { display: block; }
 .manage .said:empty { display: none; }
 code.key, pre.command { display: block; white-space: pre-wrap; word-break: break-all; background: var(--input); border: 1px solid var(--border); border-radius: .4rem; padding: .5rem .6rem; margin: 0 0 .5rem; user-select: all; -webkit-user-select: all; }
 pre.command { font: .85em ui-monospace, monospace; color: var(--strong); }
+pre.command[hidden] { display: none; }
 a { color: var(--primary); }

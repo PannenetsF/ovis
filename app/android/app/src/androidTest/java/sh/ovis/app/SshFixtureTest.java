@@ -216,21 +216,20 @@ public class SshFixtureTest {
         pc.user = user();
         pc.hostKeyAlgorithm = seen.seenAlgorithm;
         pc.hostKey = SshHostKeys.encode(seen.seenKey);
-        pc.gate = SshPcs.newGate();
         store.sealImported(pc, testKey("ed25519"), "", "ed25519");
         store.put(pc);
         try {
-            SshTunnels.open(app(), pc);
+            String gate = SshTunnels.open(app(), pc).gate();
             assertTrue(get("127.0.0.251", null).startsWith("HTTP/1.1 403 "));
-            String answer = get("127.0.0.251", SshTunnel.GATE_COOKIE + "=" + pc.gate);
+            String answer = get("127.0.0.251", SshTunnel.GATE_COOKIE + "=" + gate);
             assertTrue(answer, answer.startsWith("HTTP/1.1 200 ") && answer.contains("\"ok\":true"));
 
             byte[] other = seen.seenKey.clone();
             other[other.length - 1] ^= 1;
             pc.hostKey = SshHostKeys.encode(other);
             store.put(pc);
-            SshTunnels.open(app(), pc);
-            String stopped = get("127.0.0.251", SshTunnel.GATE_COOKIE + "=" + pc.gate);
+            String stoppedGate = SshTunnels.open(app(), pc).gate();
+            String stopped = get("127.0.0.251", SshTunnel.GATE_COOKIE + "=" + stoppedGate);
             assertTrue(stopped, stopped.startsWith("HTTP/1.1 503 ") && stopped.contains("X-Ovis-Ssh: host-key-changed"));
         } finally {
             SshTunnels.closeFor(pc.origin);

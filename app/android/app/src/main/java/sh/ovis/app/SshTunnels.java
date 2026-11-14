@@ -36,22 +36,41 @@ final class SshTunnels {
 
     private SshTunnels() {}
 
-    /** The tunnel for `pc`, listening: kept while the PC's saved way in stays the same. */
-    static synchronized SshTunnel open(Context context, SshPcs.Pc pc) throws IOException {
+    /** Closes links off the caller's thread: a link whose network died can hold its close for long. */
+    private static final java.util.concurrent.Executor CLOSER = task -> {
+        Thread thread = new Thread(task, "ovis-ssh-close");
+        thread.setDaemon(true);
+        thread.start();
+    };
+
+    /**
+     * The tunnel for `pc`, listening: kept while the PC's saved way in stays the same. A new one gets a
+     * gate of its own, which the caller hands the WebView only now that the address is this app's
+     * (OvisSshPlugin.listen): an address another app took first throws, and gets no gate.
+     */
+    static synchronized SshTunnel open(Context context, SshPcs.Pc given) throws IOException {
         Context app = context.getApplicationContext();
+        // a copy: a caller that changes its own Pc afterwards changes nothing here
+        SshPcs.Pc pc;
+        try {
+            pc = SshPcs.Pc.of(given.json());
+        } catch (org.json.JSONException impossible) {
+            throw new IllegalStateException(impossible);
+        }
         Entry entry = tunnels.get(pc.origin);
         if (entry != null && same(entry.pc, pc)) return entry.tunnel;
         if (entry != null) entry.tunnel.close();
         SshTunnel tunnel = new SshTunnel(
-            pc.gate,
+            SshPcs.newGate(),
             InetAddress.getByName(pc.loopbackHost()),
             SshPcs.LOCAL_PORT,
             () -> dial(app, pc),
-            System::currentTimeMillis,
+            android.os.SystemClock::elapsedRealtime,
             failure -> {
                 FailureListener told = listener;
                 if (told != null) told.onFailure(pc, failure);
-            }
+            },
+            CLOSER
         );
         tunnel.listen();
         tunnels.put(pc.origin, new Entry(pc, tunnel));
@@ -60,7 +79,7 @@ final class SshTunnels {
     }
 
     private static boolean same(SshPcs.Pc a, SshPcs.Pc b) {
-        return a.hostKey.equals(b.hostKey) && a.hostKeyAlgorithm.equals(b.hostKeyAlgorithm) && a.gate.equals(b.gate)
+        return a.hostKey.equals(b.hostKey) && a.hostKeyAlgorithm.equals(b.hostKeyAlgorithm)
             && a.auth.equals(b.auth) && a.importedKey.equals(b.importedKey) && a.host.equals(b.host) && a.port == b.port && a.user.equals(b.user);
     }
 

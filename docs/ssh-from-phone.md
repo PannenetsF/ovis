@@ -36,7 +36,7 @@ had typed stays a draft until you send it.
 
 When the account has no Ovis, **Install** runs the official installer there, for that account only
 and without sudo (the same one as `curl -fsSL https://ovis.sh/install.sh | sh`), shows its progress,
-and opens Ovis when it is up. The computer needs `curl`, `git` and `tar` and about 1 GB free; the app
+and opens Ovis when it is up. The computer needs `curl`, `git`, `tar` and `unzip` and about 1 GB free; the app
 says what is missing otherwise. Keep the app open until it finishes: leaving it stops the install.
 Or run that command in a terminal on the computer yourself and add the PC again.
 

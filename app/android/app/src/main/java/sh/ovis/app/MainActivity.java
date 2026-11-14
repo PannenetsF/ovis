@@ -191,7 +191,7 @@ public class MainActivity extends BridgeActivity {
         if (link != null) openAppLink(link);
         // the PC's key: its origin, or its scope on the hosted shell's origin for a relay PC. An
         // app link waiting for the connect screen shows that screen first
-        String pc = PCStore.link != null ? null : PCStore.current(this);
+        String pc = OvisSshPlugin.opening(this, PCStore.link != null ? null : PCStore.current(this));
         String origin = pc == null ? null : PCStore.origin(pc);
         String host = origin == null ? null : Uri.parse(origin).getHost();
         if (host != null) {
@@ -223,6 +223,10 @@ public class MainActivity extends BridgeActivity {
                 .create();
         }
         super.onCreate(savedInstanceState);
+        // CapacitorCookies makes the WebView's cookies the process's CookieHandler, so the native
+        // CapacitorHttp would carry them, an SSH PC's tunnel gate among them, for any page with the
+        // bridge to any address; nothing in the app uses it, and the WebView keeps its own cookies
+        java.net.CookieHandler.setDefault(null);
         keepClearOfNavigationButtons();
         String appOrigin = bridge.getScheme() + "://" + bridge.getHost();
         getOnBackPressedDispatcher().addCallback(this, pageBack);

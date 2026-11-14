@@ -162,8 +162,9 @@ public class SshTunnelTest {
             FakeLink link = new FakeLink();
             links.add(link);
             return link;
-        }, now::get, told::add);
+        }, now::get, told::add, Runnable::run);
         port = tunnel.listen();
+        assertEquals(GATE, tunnel.gate());
     }
 
     @After
@@ -222,7 +223,7 @@ public class SshTunnelTest {
     public void theGatePassesTheRequestOnceAsItCameOverOneConnection() throws Exception {
         String answer = request("theme=dark; " + SshTunnel.GATE_COOKIE + "=" + GATE);
         assertTrue(answer, answer.startsWith("HTTP/1.1 200 OK") && answer.endsWith("ok"));
-        assertEquals(head("theme=dark; " + SshTunnel.GATE_COOKIE + "=" + GATE), ovis.requests.poll(BOUND_S, TimeUnit.SECONDS));
+        assertEquals("GET /api/health HTTP/1.1\r\nHost: 127.0.0.2:47317\r\nCookie: theme=dark\r\nConnection: close\r\n\r\n", ovis.requests.poll(BOUND_S, TimeUnit.SECONDS));
         assertTrue(gated().endsWith("ok"));
         assertEquals("the second request reuses the connection", 1, links.size());
         assertTrue(told.isEmpty());
@@ -263,8 +264,8 @@ public class SshTunnelTest {
             now.addAndGet(TimeUnit.DAYS.toMillis(1));
             assertTrue(gated().contains("X-Ovis-Ssh: " + kind));
             tunnel.wake();
-            assertEquals(kind, 1, links.size());
-            assertEquals(kind, tunnel.stoppedBy().kind);
+            assertTrue(gated().contains("X-Ovis-Ssh: " + kind));
+            assertEquals("never dialled again", 1, links.size());
         }
     }
 
@@ -303,7 +304,7 @@ public class SshTunnelTest {
         assertNotNull("the request reached the PC", ovis.requests.poll(BOUND_S, TimeUnit.SECONDS));
         tunnel.drop();
         assertTrue("the page saw its request end", cut.await(BOUND_S, TimeUnit.SECONDS));
-        assertFalse(firstAnswer[0], firstAnswer[0].contains("200 OK"));
+        assertTrue("an answer, never silence the WebView could re-send on: " + firstAnswer[0], firstAnswer[0].startsWith("HTTP/1.1 503 ") && firstAnswer[0].contains("X-Ovis-Ssh: unreachable"));
         ovis.hold = false;
         assertTrue(gated().endsWith("ok"));
         assertNotNull(ovis.requests.poll(BOUND_S, TimeUnit.SECONDS));
@@ -314,29 +315,95 @@ public class SshTunnelTest {
     @Test
     public void anOvisThatMovedIsLookedUpAgainOnce() throws Exception {
         gated();
-        link(0).refusals.set(1);
+        // refused, and refused again under the relocation lock: then looked up
+        link(0).refusals.set(2);
         assertTrue(gated().endsWith("ok"));
         assertEquals(1, link(0).relocations.get());
-        link(0).refusals.set(1);
+        link(0).refusals.set(2);
         link(0).relocateFails = new SshFailure("no-ovis", "Ovis is not installed there", SshLink.INSTALL_COMMAND);
         assertTrue(gated().contains("X-Ovis-Ssh: no-ovis"));
         SshFailure failure = nextTold();
         assertEquals("no-ovis", failure.kind);
         assertEquals(SshLink.INSTALL_COMMAND, failure.command);
+        assertTrue("a failed look-up drops the connection", link(0).closed);
+        assertTrue("and the burst gets the same answer at once", gated().contains("X-Ovis-Ssh: no-ovis"));
+        assertEquals(1, links.size());
     }
 
     @Test
     public void wakingMakesANewConnectionOnlyForOneThatNoLongerAnswers() throws IOException {
         tunnel.wake();
-        assertEquals("the app back in front connects before the page asks", 1, links.size());
+        assertEquals("waking never signs in to a PC that had no connection", 0, links.size());
+        gated();
         tunnel.wake();
-        assertEquals(1, links.size());
+        assertEquals("one that answers is kept", 1, links.size());
         link(0).alive = false;
         tunnel.wake();
         assertTrue(link(0).closed);
-        assertEquals(2, links.size());
+        assertEquals("one that does not is made again before the page asks", 2, links.size());
         assertTrue(gated().endsWith("ok"));
         assertEquals(2, links.size());
+    }
+
+    @Test
+    public void aBurstWaitingOnOneDialDialsOnce() throws Exception {
+        CountDownLatch dialStarted = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger dials = new AtomicInteger();
+        SshTunnel slow = new SshTunnel(GATE, InetAddress.getLoopbackAddress(), 0, () -> {
+            dials.incrementAndGet();
+            dialStarted.countDown();
+            try {
+                release.await(BOUND_S, TimeUnit.SECONDS);
+            } catch (InterruptedException stop) {
+                Thread.currentThread().interrupt();
+            }
+            return new FakeLink();
+        }, now::get, told::add, Runnable::run);
+        int slowPort = slow.listen();
+        try {
+            BlockingQueue<String> answers = new LinkedBlockingQueue<>();
+            for (int i = 0; i < 3; i++) {
+                Thread page = new Thread(() -> {
+                    try (Socket socket = new Socket(InetAddress.getLoopbackAddress(), slowPort)) {
+                        socket.setSoTimeout((int) TimeUnit.SECONDS.toMillis(BOUND_S));
+                        socket.getOutputStream().write(head(SshTunnel.GATE_COOKIE + "=" + GATE).getBytes(StandardCharsets.US_ASCII));
+                        answers.add(new String(socket.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+                    } catch (IOException failed) {
+                        answers.add("failed: " + failed);
+                    }
+                });
+                page.setDaemon(true);
+                page.start();
+            }
+            assertTrue(dialStarted.await(BOUND_S, TimeUnit.SECONDS));
+            // the dial runs outside the tunnel's lock: a drop now does not wait for it
+            slow.drop();
+            release.countDown();
+            for (int i = 0; i < 3; i++) {
+                String answer = answers.poll(BOUND_S, TimeUnit.SECONDS);
+                assertNotNull(answer);
+                assertTrue(answer, answer.endsWith("ok"));
+            }
+            assertEquals(1, dials.get());
+        } finally {
+            slow.close();
+        }
+    }
+
+    @Test
+    public void theGateNeverReachesThePcAndEachRequestHasItsOwnConnection() throws Exception {
+        String cookie = "theme=dark; " + SshTunnel.GATE_COOKIE + "=" + GATE + "; lang=ko";
+        String forwarded = new String(SshTunnel.forwardHead(("GET /api/x HTTP/1.1\r\nHost: h\r\nConnection: keep-alive\r\nKeep-Alive: timeout=5\r\nCookie: " + cookie + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII), GATE), StandardCharsets.US_ASCII);
+        assertEquals("GET /api/x HTTP/1.1\r\nHost: h\r\nCookie: theme=dark; lang=ko\r\nConnection: close\r\n\r\n", forwarded);
+        String alone = new String(SshTunnel.forwardHead(head(SshTunnel.GATE_COOKIE + "=" + GATE).getBytes(StandardCharsets.US_ASCII), GATE), StandardCharsets.US_ASCII);
+        assertFalse(alone, alone.toLowerCase().contains("cookie"));
+        String socket = new String(SshTunnel.forwardHead("GET /ws HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n".getBytes(StandardCharsets.US_ASCII), GATE), StandardCharsets.US_ASCII);
+        assertEquals("an upgrade keeps its connection", "GET /ws HTTP/1.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n", socket);
+        gated();
+        String atPc = ovis.requests.poll(BOUND_S, TimeUnit.SECONDS);
+        assertNotNull(atPc);
+        assertFalse(atPc, atPc.contains(GATE));
     }
 
     @Test

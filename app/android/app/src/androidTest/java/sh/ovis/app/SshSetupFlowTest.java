@@ -65,13 +65,18 @@ public class SshSetupFlowTest {
         onView(withId(R.id.ssh_passphrase)).perform(scrollTo(), replaceText(passphrase), closeSoftKeyboard());
     }
 
+    /** Taps Connect through the screen itself: on a phone-sized window it can sit under the keyboard's inset, where Espresso cannot scroll to it. */
+    private static void connect(ActivityScenario<SshSetupActivity> screen) {
+        screen.onActivity(activity -> activity.findViewById(R.id.ssh_connect).performClick());
+    }
+
     @Test
     public void aPastedKeyWithAWrongPassphraseIsToldBeforeAnythingIsSent() throws InterruptedException {
         SshFixtureTest.host();
         try (ActivityScenario<SshSetupActivity> screen = ActivityScenario.launch(SshSetupActivity.class)) {
             fillIn(SshFixtureTest.testKey("ed25519-pass"), "not-the-passphrase");
             onView(withId(R.id.ssh_key_state)).check(matches(withText(R.string.ssh_key_encrypted)));
-            onView(withId(R.id.ssh_connect)).perform(scrollTo(), click());
+            connect(screen);
             awaitStep("failed:key-wrong-passphrase");
             onView(withId(R.id.ssh_status)).check(matches(withText(R.string.ssh_fail_key_wrong_passphrase)));
         }
@@ -89,7 +94,7 @@ public class SshSetupFlowTest {
         }
         try (ActivityScenario<SshSetupActivity> screen = ActivityScenario.launchActivityForResult(SshSetupActivity.class)) {
             fillIn(SshFixtureTest.testKey("ed25519-pass"), "test-only-passphrase");
-            onView(withId(R.id.ssh_connect)).perform(scrollTo(), click());
+            connect(screen);
             awaitStep("confirm-host");
             onView(withText(containsString("SHA256:"))).inRoot(isDialog()).check(matches(withText(containsString("SHA256:"))));
             onView(withText(R.string.ssh_trust)).inRoot(isDialog()).perform(click());
@@ -106,13 +111,13 @@ public class SshSetupFlowTest {
         Intent again = new Intent(app, SshSetupActivity.class).putExtra(SshSetupActivity.EXTRA_ORIGIN, added.origin);
         try (ActivityScenario<SshSetupActivity> screen = ActivityScenario.launch(again)) {
             onView(withId(R.id.ssh_private_key)).perform(scrollTo(), replaceText(SshFixtureTest.testKey("ecdsa")), closeSoftKeyboard());
-            onView(withId(R.id.ssh_connect)).perform(scrollTo(), click());
+            connect(screen);
             awaitStep("signing-in");
             awaitStep("done");
         }
         SshPcs.Pc changed = store.get(added.origin);
         assertEquals("ecdsa 256", changed.keyType);
-        assertEquals(added.gate, changed.gate);
+        assertEquals(added.origin, changed.origin);
 
         store.remove(added.origin);
         PCStore.forget(app, added.origin);

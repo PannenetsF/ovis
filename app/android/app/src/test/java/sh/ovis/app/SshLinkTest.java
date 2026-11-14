@@ -59,13 +59,16 @@ public class SshLinkTest {
         assertNull(SshLink.startCommand("none"));
     }
 
-    private static final String READY = "os=Linux\narch=x86_64\nhas=curl\nhas=git\nhas=tar\nwritable=1\nfree_kb=52428800\n";
+    private static final String READY = "os=Linux\narch=x86_64\nhas=curl\nhas=git\nhas=tar\nhas=unzip\nwritable=1\nfree_kb=52428800\n";
 
     @Test
     public void installsWhereTheInstallerRuns() {
         assertNull(SshLink.cannotInstall(READY));
         assertNull(SshLink.cannotInstall(READY.replace("x86_64", "aarch64").replace("free_kb=52428800", "free_kb=")));
-        assertNull(SshLink.cannotInstall("os=Darwin\narch=arm64\nhas=curl\nhas=git\nhas=tar\nwritable=1\nfree_kb=2097152"));
+        assertNull(SshLink.cannotInstall("os=Darwin\narch=arm64\nhas=curl\nhas=git\nhas=tar\nhas=unzip\nwritable=1\nfree_kb=2097152"));
+        SshFailure noUnzip = SshLink.cannotInstall(READY.replace("has=unzip\n", ""));
+        assertEquals("unzip", noUnzip.getMessage());
+        assertTrue(noUnzip.command, noUnzip.command.startsWith("sudo apt install unzip"));
     }
 
     @Test

@@ -93,7 +93,6 @@ public class SshPcsTest {
         pc.user = user;
         pc.hostKeyAlgorithm = "ssh-ed25519";
         pc.hostKey = "AAAAC3NzaC1lZDI1NTE5AAAAIA==";
-        pc.gate = SshPcs.newGate();
         return pc;
     }
 
@@ -190,7 +189,7 @@ public class SshPcsTest {
         SshPcs.Pc after = store.get(saved.origin);
         assertFalse(after.hasHostKey());
         assertEquals("", after.hostKeyAlgorithm);
-        assertEquals(saved.gate, after.gate);
+        assertEquals("me", after.user);
         assertEquals("studio", after.host);
         assertEquals(SshHostKeys.Verdict.UNKNOWN, SshHostKeys.judge(after.hostKeyAlgorithm, after.hostKey, "ssh-ed25519", new byte[] { 1 }));
         store.forgetHostKey("http://127.0.0.9:47317");
@@ -198,12 +197,19 @@ public class SshPcsTest {
     }
 
     @Test
-    public void eachPcGetsALoopbackAddressOfItsOwn() {
-        assertEquals("http://127.0.0.2:47317", store.freeOrigin());
-        store.put(pc("http://127.0.0.2:47317", "a", "me"));
-        store.put(pc("http://127.0.0.4:47317", "b", "me"));
-        assertEquals("http://127.0.0.3:47317", store.freeOrigin());
-        for (int n = 3; n < 255; n++) store.put(pc("http://127.0.0." + n + ":47317", "h" + n, "me"));
+    public void eachPcGetsALoopbackAddressOfItsOwnNeverOneARemovedPcHad() {
+        String first = store.freeOrigin();
+        assertEquals("http://127.0.0.2:47317", first);
+        store.put(pc(first, "a", "me"));
+        String second = store.freeOrigin();
+        assertEquals("http://127.0.0.3:47317", second);
+        store.put(pc(second, "b", "me"));
+        store.remove(first);
+        assertEquals("a removed PC's address (its storage) is not handed out again", "http://127.0.0.4:47317", store.freeOrigin());
+        for (int n = 2; n < 255; n++) store.put(pc("http://127.0.0." + n + ":47317", "h" + n, "me"));
+        store.remove("http://127.0.0.7:47317");
+        assertEquals("once all were handed out, round to a free one", "http://127.0.0.7:47317", store.freeOrigin());
+        store.put(pc("http://127.0.0.7:47317", "again", "me"));
         try {
             store.freeOrigin();
             fail("gave out a used address");
@@ -290,6 +296,5 @@ public class SshPcsTest {
         assertEquals("rsa 3072", read.keyType);
         assertEquals("me@studio:2222", read.label());
         assertEquals("127.0.0.2", read.loopbackHost());
-        assertEquals(saved.gate, read.gate);
     }
 }

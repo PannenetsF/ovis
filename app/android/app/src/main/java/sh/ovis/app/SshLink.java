@@ -165,6 +165,9 @@ final class SshLink {
             return text.toString("UTF-8");
         } catch (IOException failed) {
             throw unreachable(failed);
+        } catch (IllegalStateException closed) {
+            // sshlib's word for a connection that was closed meanwhile (a drop, a network change)
+            throw new SshFailure("unreachable", "The connection ended");
         } finally {
             if (session != null) session.close();
         }
@@ -364,6 +367,8 @@ final class SshLink {
             }
         } catch (IOException failed) {
             throw unreachable(failed);
+        } catch (IllegalStateException closed) {
+            throw new SshFailure("unreachable", "The connection ended");
         }
     }
 
@@ -396,7 +401,7 @@ final class SshLink {
     /** One look at the machine before an install, as server/pc-install.ts PROBE. */
     static final String PROBE = REMOTE_PATH +
         "printf 'os=%s\\narch=%s\\n' \"$(uname -s)\" \"$(uname -m)\"; " +
-        "for tool in curl git tar; do command -v \"$tool\" >/dev/null 2>&1 && printf 'has=%s\\n' \"$tool\"; done; " +
+        "for tool in curl git tar unzip; do command -v \"$tool\" >/dev/null 2>&1 && printf 'has=%s\\n' \"$tool\"; done; " +
         "test -w \"$HOME\" && printf 'writable=1\\n'; " +
         "printf 'free_kb=%s\\n' \"$(df -Pk \"$HOME\" 2>/dev/null | awk 'NR==2 { print $4 }')\"; true";
 
@@ -410,7 +415,8 @@ final class SshLink {
         if (!(os.equals("Linux") || os.equals("Darwin")) || !java.util.Arrays.asList("x86_64", "amd64", "aarch64", "arm64").contains(arch)) {
             return new SshFailure("install-unsupported", os.isEmpty() ? "No POSIX shell answered" : os + " " + arch);
         }
-        for (String tool : new String[] { "curl", "git", "tar" }) {
+        // unzip: a release without a compiled server installs from source, and Bun's installer unzips
+        for (String tool : new String[] { "curl", "git", "tar", "unzip" }) {
             if (!probe.contains("has=" + tool + "\n") && !probe.endsWith("has=" + tool)) {
                 return new SshFailure("install-missing-tool", tool, os.equals("Darwin") ? "xcode-select --install" : "sudo apt install " + tool + "   # or: sudo dnf install " + tool);
             }
@@ -467,8 +473,10 @@ final class SshLink {
         SshFailure cannot = cannotInstall(run(connection, PROBE, 20_000));
         if (cannot != null) throw cannot;
         StringBuilder tail = new StringBuilder();
-        String output = run(connection, INSTALLER_RUN, 10 * 60_000, line -> {
-            if (line.startsWith("ovis-install-exit=")) return;
+        String output = run(connection, INSTALLER_RUN, 10 * 60_000, raw -> {
+            // the installer colours its lines for a terminal; the phone shows them as text
+            String line = raw.replaceAll("\u001B\\[[0-9;?]*[A-Za-z]", "").trim();
+            if (line.isEmpty() || line.startsWith("ovis-install-exit=")) return;
             tail.append(line).append('\n');
             if (tail.length() > 4000) tail.delete(0, tail.length() - 4000);
             progress.accept(line);
@@ -489,7 +497,12 @@ final class SshLink {
 
             @Override
             public SshTunnel.Channel open() throws IOException {
-                LocalStreamForwarder stream = connection.createLocalStreamForwarder("127.0.0.1", remotePort);
+                LocalStreamForwarder stream;
+                try {
+                    stream = connection.createLocalStreamForwarder("127.0.0.1", remotePort);
+                } catch (IllegalStateException closed) {
+                    throw new IOException("The connection ended", closed);
+                }
                 return new SshTunnel.Channel() {
                     @Override
                     public InputStream input() throws IOException {
@@ -524,8 +537,8 @@ final class SshLink {
                     try {
                         connection.ping();
                         answered[0] = true;
-                    } catch (IOException gone) {
-                        // not answered
+                    } catch (IOException | IllegalStateException gone) {
+                        // not answered, or closed meanwhile
                     }
                 }, "ovis-ssh-ping");
                 ping.setDaemon(true);

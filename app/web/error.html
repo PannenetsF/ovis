@@ -121,7 +121,7 @@
       });
       document.getElementById("ssh").hidden = false;
     }
-    if (relay && state.name) {
+    if ((relay || sshPc) && state.name) {
       document.getElementById("what").textContent = korean ? `앱이 ${state.name}을(를) 열지 못했습니다.` : `The app could not open ${state.name}.`;
     }
     // why it failed, when the app or WebView says: not Ovis, nothing listening, or no answer

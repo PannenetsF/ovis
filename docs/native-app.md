@@ -582,8 +582,9 @@ runs the Ovis it already has.
 How a page gets there (`app/android/app/src/main/java/sh/ovis/app/Ssh*.java`, `OvisSshPlugin`):
 
 - Each SSH PC is saved under a loopback origin of its own on the phone,
-  `http://127.0.0.<n>:47317` (`SshPcs.freeOrigin`, n from 2), so its cookies, storage, drafts and
-  service worker stay apart from every other PC's and stay put across restarts. `SshTunnel` listens
+  `http://127.0.0.<n>:47317` (`SshPcs.freeOrigin`, n from 2, never one a removed PC had until all
+  253 were handed out; Remove also deletes that origin's web storage), so its cookies, storage, drafts
+  and service worker stay apart from every other PC's and stay put across restarts. `SshTunnel` listens
   there; each connection the WebView makes becomes an SSH direct-tcpip channel to the PC's own Ovis
   on its 127.0.0.1. That Ovis sees a request from its own loopback with no proxy headers and lets it
   in as its own PC's (`server/access.ts`, `local`): no token is typed or kept.
@@ -593,17 +594,28 @@ How a page gets there (`app/android/app/src/main/java/sh/ovis/app/Ssh*.java`, `O
   started through its launcher (the herdr plugin, `ovis.service`, the launchd agent); a plugin whose
   herdr is not running gets a headless `herdr server`, as `server/pc-install.ts` does.
 - Other apps on the phone can reach its loopback too, so the first request on each connection must
-  carry the PC's gate cookie (`ovis_ssh_gate`, 256 random bits, HttpOnly, SameSite=Strict, on that
-  origin only), which the app sets through `CookieManager`; anything else gets 403 and nothing
-  reaches the PC.
-- Lifetime (`SshTunnel`, each rule checked in `SshTunnelTest` with the clock and the SSH side
-  injected): the SSH connection is made when a request needs it and again after it ended (the app
-  in the background, a network change, which `SshTunnels` watches and answers by dropping every
-  connection), asking nothing. A request is passed on once, as it came, so a request cut by a drop is
-  never sent again; what was typed stays a draft in the page. A failure answers the page's burst at
-  once for 2 s, then is tried again; a stop (the host key changed, the key refused, a key the phone
-  can no longer open) is never tried again until the PC is set up again. Coming back to the app
-  pings the connection and makes a new one before the page asks.
+  carry the tunnel's gate cookie (`ovis_ssh_gate`, 256 random bits, new each time the tunnel
+  starts, HttpOnly, SameSite=Strict, on that origin only), which the app hands `CookieManager` only
+  once the tunnel holds the address; anything else gets 403 and nothing reaches the PC, and the gate is
+  taken out of the request before it goes on. An address another app took first is never opened: the
+  connect screen says so instead (`OvisSshPlugin.listen`, `ssh-port`), as the page that would answer
+  there would be that app's, with the app's bridge. Capacitor makes the WebView's cookies the process's
+  `CookieHandler`, which its native HTTP plugin would carry to any address a page with the bridge
+  asks for; `MainActivity` unsets it, as nothing in the app uses it. `OvisSsh` answers the app's own
+  pages only, never a PC's.
+- Lifetime (`SshTunnel`, each rule checked in `SshTunnelTest` with the clock, the SSH side and the
+  closer injected): the SSH connection is made when a request needs it, once for a whole burst, outside
+  the tunnel's lock, and again after it ended (the app in the background, a network change, which
+  `SshTunnels` watches and answers by dropping every connection), asking nothing. A request is passed on
+  once, with `Connection: close` (a WebSocket's upgrade excepted), so the WebView never re-sends it on a
+  reused connection, and one the PC side ends before answering gets 503 rather than silence: what was
+  typed stays a draft in the page. A failure answers the page's burst at once for 2 s (by the monotonic
+  clock), then is tried again; looking the PC's Ovis up again happens one request at a time, and its
+  failure drops the connection into that window. A stop (the host key changed, the key refused, a key
+  the phone can no longer open) is never tried again until the PC is set up again. Coming back to the
+  app pings a connection that exists and makes a new one before the page asks; a PC with none is not
+  signed in to. A link is closed off the caller's thread, as sshlib's close can wait on a dead network,
+  and a link closed meanwhile (sshlib's IllegalStateException) is a failure, never a crash.
 - No foreground service. Without one the connection ends some time after the app leaves the screen
   and is made again on return, which takes about a second on a LAN; a foreground service would keep
   it at the cost of a permanent notification and Play's `specialUse` declaration with a video, for
@@ -650,8 +662,16 @@ The PC flow's remote bundle (`scripts/build-remote-bundle.ts`) cannot serve the 
 bridge-only server, whose token only the PC that installed it has, with no app of its own to open.
 The phone drives the PC flow's other path instead, the official installer as one SSH command
 (`SshLink.INSTALLER_RUN`, the same command shape as `installerRun` in `server/pc-install.ts`, with
-its checks for curl, git, tar, a writable home and 1 GB free), then starts Ovis and opens it.
-MEASURED-INSTALL
+its checks for curl, git, tar and unzip, a writable home and 1 GB free), then starts Ovis and opens it.
+Measured on the bare fixture (`up-bare.sh`: Ubuntu 24.04 with SSH, curl, git, tar and unzip, no herdr
+and no Ovis), driven by `SshFixtureTest.installsOvisWhereThereIsNone` from the emulator: release v0.5.3
+ships no compiled server, so the installer installs from source: herdr, Bun and the herdr plugin's
+checkout, built there. It downloaded 361 MB, left 916 MB in the home folder (the plugin checkout 750 MB,
+Bun's cache 474 MB of it) and took 31.5 s from the tap to Ovis answering on this PC's link; a home
+connection at 50 Mbit/s needs about a minute more for the download. A release with the compiled server
+needs far less. The installer's from-source path needs `unzip`, which the PC flow's checks
+(`server/pc-install.ts`) do not look for either: a machine without it fails there after herdr is
+installed, while the phone's own check says so first.
 
 Tests: the JVM tests above run with `./gradlew :app:testDebugUnitTest`.
 `scripts/fixtures/phone-ssh/emulator-run.sh [--bare]` is the emulator run: it starts the disposable
@@ -661,9 +681,11 @@ format signing in, the host-key rule, the password-once registration and its rem
 gate and stop) and `SshSetupFlowTest` (the setup screen with a pasted, passphrase-protected key);
 `--bare` adds the first install on a fixture with neither herdr nor Ovis.
 
-MEASURED-SIZE
+Size: the debug APK is SIZE-DEBUG. The SSH library (sshlib, Tink, the Kyber KEM) adds 1.03 MB to the
+release APK (measured for the prototype: 47,906,469 bytes against 46,874,305, minify off as before); the
+product code adds SIZE-CODE of classes.
 
-Not tried yet: a real phone (only the emulator), a real Wi-Fi to mobile data switch, push alerts
+Not tried yet: a real phone (only the emulator, Android 15 with Google APIs), a real Wi-Fi to mobile data switch, push alerts
 from an SSH PC (they come from the PC's own Ovis, so they should work, unchecked), a PC whose Ovis
 has `OVIS_TOKEN` set (its sign-in page shows), a named herdr session, Windows, jump hosts and
 `~/.ssh/config` aliases. The PC's Ovis menu names an SSH PC "local", as Ovis sees itself; and an

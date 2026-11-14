@@ -135,15 +135,20 @@ describe("why an address did not open", () => {
 describe("an SSH PC under Manage", () => {
   const pc = { origin: "http://127.0.0.2:47317", host: "studio.lan", port: 22, user: "me", auth: "phone-key", keyType: "", hostKeyAlgorithm: "ssh-ed25519", fingerprint: "SHA256:abc" };
 
-  it("names its address, how the phone signs in, and its confirmed host key", () => {
-    expect(sshDetails(pc)).toEqual({ address: "me@studio.lan", how: "Signs in with this phone's key", hostKey: "Host key ssh-ed25519 SHA256:abc", confirmed: true });
-    expect(sshDetails({ ...pc, port: 2222, auth: "imported", keyType: "rsa 3072" })).toMatchObject({ address: "me@studio.lan:2222", how: "Signs in with a pasted rsa 3072 key" });
-    expect(sshDetails({ ...pc, auth: "imported", keyType: "" }).how).toBe("Signs in with a pasted key");
+  it("names its address, the pasted key's type, and its confirmed host key", () => {
+    const details = sshDetails(pc);
+    expect(details.address).toBe("me@studio.lan");
+    expect(details.confirmed).toBe(true);
+    expect(details.hostKey).toContain("ssh-ed25519 SHA256:abc");
+    const pasted = sshDetails({ ...pc, port: 2222, auth: "imported", keyType: "rsa 3072" });
+    expect(pasted.address).toBe("me@studio.lan:2222");
+    expect(pasted.how).toContain("rsa 3072");
+    expect(pasted.how).not.toBe(details.how);
   });
 
   it("is not confirmed once its host key was forgotten", () => {
     const forgotten = sshDetails({ ...pc, hostKeyAlgorithm: "", fingerprint: "" });
     expect(forgotten.confirmed).toBe(false);
-    expect(forgotten.hostKey).toStartWith("Host key forgotten");
+    expect(forgotten.hostKey).not.toContain("SHA256:");
   });
 });

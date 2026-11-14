@@ -11,6 +11,9 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.LongSupplier;
@@ -22,20 +25,24 @@ import java.util.function.LongSupplier;
  * (server/access.ts decideAccess, `local`): no token is typed or kept.
  *
  * <p>Every app on the phone can reach the phone's loopback, so a connection is passed on only when its
- * first request carries the PC's gate cookie, which the app put in the WebView's cookie store and no
- * other app can read; anything else gets 403 and nothing reaches the PC.
+ * first request carries this tunnel's gate cookie, which the app put in the WebView's cookie store once
+ * the listener was bound and no other app can read; anything else gets 403 and nothing reaches the PC.
+ * The gate is taken out of the request before it goes on.
  *
- * <p>Lifetime rules (SshTunnelTest checks each, with this class's clock and dialer injected):
+ * <p>Lifetime rules (SshTunnelTest checks each, with this class's clock, dialer and closer injected):
  * <ul>
- *   <li>the SSH connection is made when a request needs it, never before, and made again on the next
- *       request after it ended (the app in the background, a network change: `drop`), asking nothing;</li>
- *   <li>a request is passed on once, as it came: a request cut by a drop is never sent again, so
- *       nothing typed is sent twice (the page keeps it as a draft);</li>
+ *   <li>the SSH connection is made when a request needs it, once however many requests wait for it, and
+ *       made again on the next request after it ended (the app in the background, a network change:
+ *       `drop`), asking nothing; nothing waits on a dial but the requests that need it;</li>
+ *   <li>a request is passed on once, as it came, with `Connection: close` (an upgrade excepted), so the
+ *       WebView never re-sends it on a reused connection; one the PC side ends before answering gets
+ *       503, never silence: nothing typed is sent twice (the page keeps it as a draft);</li>
  *   <li>a failure is answered at once, for RETRY_AFTER_MS, to every request of the page's burst, then
- *       tried again; a stop (SshFailure.stops: the host key, the key refused) is never tried again by
- *       this tunnel: only setting the PC up again makes another;</li>
- *   <li>`wake` (the app back in front) checks a connection with a ping and makes a new one before the
- *       page asks, when it no longer answers.</li>
+ *       tried again; looking the PC's Ovis up again happens once at a time, and its failure drops the
+ *       connection into that window; a stop (SshFailure.stops: the host key, the key refused) is never
+ *       tried again by this tunnel: only setting the PC up again makes another;</li>
+ *   <li>`wake` (the app back in front) checks a connection that exists with a ping and makes a new one
+ *       before the page asks when it no longer answers; it never signs in to a PC that had none.</li>
  * </ul>
  * A failed request gets 503 with an `X-Ovis-Ssh` header naming the failure's kind; the listener hears
  * every failure, so the app's error page can say what happened and what to do.
@@ -87,27 +94,38 @@ final class SshTunnel {
     private final Dialer dialer;
     private final LongSupplier clock;
     private final Listener listener;
+    /** where links are closed: closing one whose network died can wait on it for long */
+    private final Executor closer;
     private final ExecutorService pipes = Executors.newCachedThreadPool(task -> {
         Thread thread = new Thread(task, "ovis-ssh-pipe");
         thread.setDaemon(true);
         return thread;
     });
+    private final Object relocating = new Object();
     private ServerSocket server;
     private Link link;
+    private CompletableFuture<Link> dialing;
+    private boolean closed;
     private SshFailure lastFailure;
     private long failedAt;
     private SshFailure stopped;
 
-    SshTunnel(String gate, InetAddress bindHost, int bindPort, Dialer dialer, LongSupplier clock, Listener listener) {
+    SshTunnel(String gate, InetAddress bindHost, int bindPort, Dialer dialer, LongSupplier clock, Listener listener, Executor closer) {
         this.gate = gate;
         this.bindHost = bindHost;
         this.bindPort = bindPort;
         this.dialer = dialer;
         this.clock = clock;
         this.listener = listener;
+        this.closer = closer;
     }
 
-    /** Starts listening; the port it listens on (bindPort, or the one picked for 0). */
+    /** The cookie value the WebView must carry here; set it only once listen() returned. */
+    String gate() {
+        return gate;
+    }
+
+    /** Starts listening; the port it listens on (bindPort, or the one picked for 0). Throws when another app holds the address. */
     int listen() throws IOException {
         server = new ServerSocket();
         server.setReuseAddress(true);
@@ -117,8 +135,9 @@ final class SshTunnel {
                 try {
                     Socket client = server.accept();
                     pipes.execute(() -> serve(client));
-                } catch (IOException | java.util.concurrent.RejectedExecutionException closed) {
-                    return;
+                } catch (IOException | java.util.concurrent.RejectedExecutionException failed) {
+                    // one connection that failed to arrive is not the listener's end
+                    if (server.isClosed() || pipes.isShutdown()) return;
                 }
             }
         }, "ovis-ssh-accept");
@@ -128,6 +147,9 @@ final class SshTunnel {
     }
 
     void close() {
+        synchronized (this) {
+            closed = true;
+        }
         try {
             if (server != null) server.close();
         } catch (IOException ignored) {
@@ -144,7 +166,7 @@ final class SshTunnel {
             was = link;
             link = null;
         }
-        if (was != null) was.close();
+        if (was != null) closer.execute(was::close);
     }
 
     /** The app came back: a connection that no longer answers is dropped and made again before the page asks. */
@@ -153,12 +175,8 @@ final class SshTunnel {
         synchronized (this) {
             now = link;
         }
-        if (now != null && !now.alive()) {
-            synchronized (this) {
-                if (link == now) link = null;
-            }
-            now.close();
-        }
+        if (now == null || now.alive()) return;
+        forget(now);
         try {
             ready();
         } catch (SshFailure failed) {
@@ -166,35 +184,80 @@ final class SshTunnel {
         }
     }
 
-    synchronized SshFailure stoppedBy() {
-        return stopped;
+    private void forget(Link gone) {
+        synchronized (this) {
+            if (link == gone) link = null;
+        }
+        closer.execute(gone::close);
     }
 
-    private synchronized Link ready() throws SshFailure {
-        if (stopped != null) {
-            listener.onFailure(stopped);
-            throw stopped;
+    private Link ready() throws SshFailure {
+        CompletableFuture<Link> waiting;
+        boolean mine = false;
+        synchronized (this) {
+            if (stopped != null) {
+                listener.onFailure(stopped);
+                throw stopped;
+            }
+            if (link != null) return link;
+            if (lastFailure != null && clock.getAsLong() - failedAt < RETRY_AFTER_MS) {
+                listener.onFailure(lastFailure);
+                throw lastFailure;
+            }
+            if (closed) throw new SshFailure("cancelled", "Closed");
+            if (dialing == null) {
+                dialing = new CompletableFuture<>();
+                mine = true;
+            }
+            waiting = dialing;
         }
-        if (link != null) return link;
-        if (lastFailure != null && clock.getAsLong() - failedAt < RETRY_AFTER_MS) {
-            listener.onFailure(lastFailure);
-            throw lastFailure;
-        }
-        Link made;
+        if (!mine) return awaitDial(waiting);
+        // the dial itself runs outside the lock: a drop, a close or a wake never waits on it
+        Link made = null;
+        SshFailure failed = null;
         try {
             made = dialer.dial();
-        } catch (SshFailure failed) {
-            remember(failed);
+        } catch (SshFailure refused) {
+            failed = refused;
+        } catch (RuntimeException unexpected) {
+            failed = new SshFailure("internal", SshFailure.rootMessage(unexpected));
+        }
+        Link kept = made;
+        synchronized (this) {
+            dialing = null;
+            if (failed == null && closed) failed = new SshFailure("cancelled", "Closed");
+            if (failed != null) {
+                remember(failed);
+            } else {
+                link = kept;
+                lastFailure = null;
+            }
+        }
+        if (failed != null) {
+            if (made != null) closer.execute(made::close);
+            waiting.completeExceptionally(failed);
             throw failed;
         }
         made.onEnd(() -> {
             synchronized (SshTunnel.this) {
-                if (link == made) link = null;
+                if (link == kept) link = null;
             }
         });
-        link = made;
-        lastFailure = null;
+        waiting.complete(made);
         return made;
+    }
+
+    private Link awaitDial(CompletableFuture<Link> waiting) throws SshFailure {
+        try {
+            return waiting.get();
+        } catch (ExecutionException failed) {
+            SshFailure why = failed.getCause() instanceof SshFailure ? (SshFailure) failed.getCause() : new SshFailure("internal", SshFailure.rootMessage(failed));
+            listener.onFailure(why);
+            throw why;
+        } catch (InterruptedException stopping) {
+            Thread.currentThread().interrupt();
+            throw new SshFailure("cancelled", "Cancelled");
+        }
     }
 
     private void remember(SshFailure failed) {
@@ -204,31 +267,34 @@ final class SshTunnel {
         listener.onFailure(failed);
     }
 
-    /** A channel to the PC's Ovis; after a failed open the Ovis is looked up again once. */
+    /** A channel to the PC's Ovis; after a failed open the Ovis is looked up again, by one request at a time. */
     private Channel channel() throws SshFailure {
         Link now = ready();
         try {
             return now.open();
         } catch (IOException refused) {
+            // looked up below
+        }
+        synchronized (relocating) {
+            try {
+                return now.open();
+            } catch (IOException stillRefused) {
+                // another request did not find it either
+            }
+            SshFailure failed;
             try {
                 now.relocate();
                 return now.open();
             } catch (SshFailure gone) {
-                synchronized (this) {
-                    remember(gone);
-                }
-                throw gone;
+                failed = gone;
             } catch (IOException again) {
-                synchronized (this) {
-                    if (link == now) link = null;
-                }
-                now.close();
-                SshFailure failed = new SshFailure("unreachable", SshFailure.rootMessage(again));
-                synchronized (this) {
-                    remember(failed);
-                }
-                throw failed;
+                failed = new SshFailure("unreachable", SshFailure.rootMessage(again));
             }
+            forget(now);
+            synchronized (this) {
+                remember(failed);
+            }
+            throw failed;
         }
     }
 
@@ -248,26 +314,38 @@ final class SshTunnel {
             try {
                 stream = channel();
             } catch (SshFailure failed) {
-                byte[] body = (failed.kind + ": " + failed.getMessage()).getBytes(StandardCharsets.UTF_8);
-                toPage.write((
-                    "HTTP/1.1 503 Service Unavailable\r\n" + FAILURE_HEADER + ": " + failed.kind.replaceAll("[^a-z-]", "") +
-                    "\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: " + body.length +
-                    "\r\nConnection: close\r\n\r\n"
-                ).getBytes(StandardCharsets.US_ASCII));
-                toPage.write(body);
-                toPage.flush();
+                answerFailure(toPage, failed);
                 client.close();
                 return;
             }
             client.setSoTimeout(0);
             OutputStream toPc = stream.output();
-            toPc.write(head);
+            toPc.write(forwardHead(head, gate));
             toPc.flush();
             InputStream fromPc = stream.input();
             pipes.execute(() -> pump(fromPage, toPc, client, stream));
-            pump(fromPc, toPage, client, stream);
-        } catch (IOException | java.util.concurrent.RejectedExecutionException ended) {
+            if (pump(fromPc, toPage, client, stream) == 0) {
+                // the PC side ended before answering: say so, so the page never takes silence for a reason to send again
+                answerFailure(toPage, new SshFailure("unreachable", "The connection to the PC ended"));
+            }
             closeQuietly(client);
+        } catch (IOException | RuntimeException ended) {
+            closeQuietly(client);
+        }
+    }
+
+    private static void answerFailure(OutputStream toPage, SshFailure failed) {
+        byte[] body = (failed.kind + ": " + failed.getMessage()).getBytes(StandardCharsets.UTF_8);
+        try {
+            toPage.write((
+                "HTTP/1.1 503 Service Unavailable\r\n" + FAILURE_HEADER + ": " + failed.kind.replaceAll("[^a-z-]", "") +
+                "\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: " + body.length +
+                "\r\nConnection: close\r\n\r\n"
+            ).getBytes(StandardCharsets.US_ASCII));
+            toPage.write(body);
+            toPage.flush();
+        } catch (IOException gone) {
+            // the page went away first
         }
     }
 
@@ -303,20 +381,56 @@ final class SshTunnel {
         return false;
     }
 
-    private static void pump(InputStream from, OutputStream to, Socket client, Channel stream) {
+    /**
+     * The head as it goes to the PC: without the gate cookie (the PC has no use for it), and with
+     * `Connection: close` unless it is an upgrade (a WebSocket), so every request has a connection of its
+     * own and the WebView never re-sends one on a connection that was reused.
+     */
+    static byte[] forwardHead(byte[] head, String gate) {
+        String text = new String(head, StandardCharsets.ISO_8859_1);
+        String[] lines = text.substring(0, text.length() - 4).split("\r\n", -1);
+        boolean upgrade = false;
+        for (String line : lines) if (line.toLowerCase(Locale.ROOT).startsWith("upgrade:")) upgrade = true;
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            String lower = line.toLowerCase(Locale.ROOT);
+            if (i > 0 && lower.startsWith("cookie:")) {
+                StringBuilder kept = new StringBuilder();
+                for (String pair : line.substring("cookie:".length()).split(";")) {
+                    if (pair.trim().startsWith(GATE_COOKIE + "=")) continue;
+                    if (kept.length() > 0) kept.append(';');
+                    kept.append(pair);
+                }
+                if (kept.toString().trim().isEmpty()) continue;
+                line = "Cookie:" + kept;
+            } else if (i > 0 && !upgrade && (lower.startsWith("connection:") || lower.startsWith("keep-alive:"))) {
+                continue;
+            }
+            out.append(line).append("\r\n");
+        }
+        if (!upgrade) out.append("Connection: close\r\n");
+        out.append("\r\n");
+        return out.toString().getBytes(StandardCharsets.ISO_8859_1);
+    }
+
+    /** Copies until either side ends; the bytes copied. */
+    private static long pump(InputStream from, OutputStream to, Socket client, Channel stream) {
         byte[] buffer = new byte[32 * 1024];
+        long copied = 0;
         try {
             int read;
             while ((read = from.read(buffer)) >= 0) {
                 to.write(buffer, 0, read);
                 to.flush();
+                copied += read;
             }
-        } catch (IOException ended) {
+        } catch (IOException | RuntimeException ended) {
             // either side went away
         } finally {
-            closeQuietly(client);
             stream.close();
         }
+        return copied;
     }
 
     private static void closeQuietly(Socket socket) {

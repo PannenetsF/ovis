@@ -38,16 +38,39 @@ public class OvisSshPlugin extends Plugin {
         forgetRemoved();
         SshTunnels.listener = this::failed;
         // every saved SSH PC listens (SSH itself waits for a request): the connect screen checks a PC it opens
-        for (SshPcs.Pc pc : SshPcs.on(getContext()).list()) {
-            setGate(pc);
-            try {
-                SshTunnels.open(getContext(), pc);
-            } catch (IOException taken) {
-                if (pc.origin.equals(PCStore.current(getContext()))) {
-                    PCStore.fail("This phone could not listen on " + pc.loopbackHost() + ":" + SshPcs.LOCAL_PORT + " for this PC: " + taken.getMessage(), "ssh-internal");
-                }
-            }
+        for (SshPcs.Pc pc : SshPcs.on(getContext()).list()) listen(getContext(), pc.origin);
+    }
+
+    /**
+     * Makes sure the SSH PC `origin` (any other origin passes) listens on its address on this phone, and
+     * only then gives the WebView that tunnel's gate. False when another app holds the address: the PC
+     * must not open then, as the page that answers there would be that app's, with the app's bridge.
+     * MainActivity asks before it opens the PC; the failure is kept for the connect screen (`ssh-port`).
+     */
+    static boolean listen(android.content.Context context, String origin) {
+        SshPcs.Pc pc = SshPcs.on(context).get(origin);
+        if (pc == null) return true;
+        try {
+            setGate(pc.origin, SshTunnels.open(context, pc).gate());
+            return true;
+        } catch (IOException taken) {
+            PCStore.fail(pc.loopbackHost() + ":" + SshPcs.LOCAL_PORT + ": " + taken.getMessage(), "ssh-port");
+            return false;
         }
+    }
+
+    /** `pc` (the PC about to open), or null when it is an SSH PC whose address another app holds: the connect screen shows instead, saying so. */
+    static String opening(android.content.Context context, String pc) {
+        if (pc == null || listen(context, pc)) return pc;
+        PCStore.setCurrent(context, null);
+        return null;
+    }
+
+    /** Only the app's own pages manage SSH PCs: a PC's page has the bridge too, and must not reach another PC's keys. */
+    private boolean fromAppPage(PluginCall call) {
+        if (getBridge().getServerUrl() == null) return true;
+        call.reject("Only the app's own pages manage SSH PCs.");
+        return false;
     }
 
     @Override
@@ -57,12 +80,14 @@ public class OvisSshPlugin extends Plugin {
 
     @PluginMethod
     public void add(PluginCall call) {
+        if (!fromAppPage(call)) return;
         startActivityForResult(call, new Intent(getContext(), SshSetupActivity.class), "added");
     }
 
     /** Sets the PC `origin` up again on the setup screen, its address kept. */
     @PluginMethod
     public void setUp(PluginCall call) {
+        if (!fromAppPage(call)) return;
         SshPcs.Pc pc = SshPcs.on(getContext()).get(call.getString("origin"));
         if (pc == null) {
             call.reject("That SSH PC is not saved on this phone.");
@@ -83,6 +108,7 @@ public class OvisSshPlugin extends Plugin {
     /** The SSH PCs, by origin: how each is reached and signs in, and its host key's fingerprint ("" once forgotten). */
     @PluginMethod
     public void list(PluginCall call) {
+        if (!fromAppPage(call)) return;
         JSArray pcs = new JSArray();
         for (SshPcs.Pc pc : SshPcs.on(getContext()).list()) {
             JSObject item = new JSObject();
@@ -105,6 +131,7 @@ public class OvisSshPlugin extends Plugin {
     /** This phone's own key line, for authorized_keys. */
     @PluginMethod
     public void phoneKey(PluginCall call) {
+        if (!fromAppPage(call)) return;
         new Thread(() -> {
             try {
                 JSObject answer = new JSObject();
@@ -112,6 +139,8 @@ public class OvisSshPlugin extends Plugin {
                 call.resolve(answer);
             } catch (SshFailure failed) {
                 call.reject(failed.getMessage(), failed.kind);
+            } catch (RuntimeException keystore) {
+                call.reject(SshFailure.rootMessage(keystore), "internal");
             }
         }, "ovis-ssh-key").start();
     }
@@ -119,6 +148,7 @@ public class OvisSshPlugin extends Plugin {
     /** Puts `text` on the clipboard: the page's own clipboard is not open to the app's pages. */
     @PluginMethod
     public void copy(PluginCall call) {
+        if (!fromAppPage(call)) return;
         String text = call.getString("text", "");
         getActivity().runOnUiThread(() -> {
             ClipboardManager clipboard = getContext().getSystemService(ClipboardManager.class);
@@ -130,6 +160,7 @@ public class OvisSshPlugin extends Plugin {
     /** The PC's name in the list; an empty one goes back to user@host. */
     @PluginMethod
     public void rename(PluginCall call) {
+        if (!fromAppPage(call)) return;
         SshPcs.Pc pc = SshPcs.on(getContext()).get(call.getString("origin"));
         if (pc == null) {
             call.reject("That SSH PC is not saved on this phone.");
@@ -144,6 +175,7 @@ public class OvisSshPlugin extends Plugin {
     /** Forgets the PC's host key on purpose: it opens again only once the setup screen confirms the key it shows then. */
     @PluginMethod
     public void forgetHostKey(PluginCall call) {
+        if (!fromAppPage(call)) return;
         String origin = call.getString("origin");
         SshPcs.on(getContext()).forgetHostKey(origin);
         SshTunnels.closeFor(origin);
@@ -158,6 +190,7 @@ public class OvisSshPlugin extends Plugin {
      */
     @PluginMethod
     public void remove(PluginCall call) {
+        if (!fromAppPage(call)) return;
         String origin = call.getString("origin");
         boolean cleanRemote = Boolean.TRUE.equals(call.getBoolean("cleanRemote", false));
         SshPcs store = SshPcs.on(getContext());
@@ -178,6 +211,9 @@ public class OvisSshPlugin extends Plugin {
                 } catch (SshFailure failed) {
                     remote = "failed";
                     answer.put("reason", failed.kind + ": " + failed.getMessage());
+                } catch (RuntimeException unexpected) {
+                    remote = "failed";
+                    answer.put("reason", SshFailure.rootMessage(unexpected));
                 } finally {
                     if (connection != null) connection.close();
                 }
@@ -186,6 +222,8 @@ public class OvisSshPlugin extends Plugin {
             store.remove(pc.origin);
             PCStore.forget(getContext(), pc.origin);
             CookieManager.getInstance().setCookie(pc.origin, SshTunnel.GATE_COOKIE + "=; Path=/; Max-Age=0");
+            // the page's storage there (drafts, its service worker) goes with the PC
+            getActivity().runOnUiThread(() -> android.webkit.WebStorage.getInstance().deleteOrigin(pc.origin));
             answer.put("remote", remote);
             call.resolve(answer);
         }, "ovis-ssh-remove").start();
@@ -205,9 +243,9 @@ public class OvisSshPlugin extends Plugin {
     }
 
     /** The WebView's pass to the tunnel: an HttpOnly cookie on the PC's own loopback origin, which no page script or other app reads. */
-    static void setGate(SshPcs.Pc pc) {
+    static void setGate(String origin, String gate) {
         CookieManager cookies = CookieManager.getInstance();
-        cookies.setCookie(pc.origin, SshTunnel.GATE_COOKIE + "=" + pc.gate + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000");
+        cookies.setCookie(origin, SshTunnel.GATE_COOKIE + "=" + gate + "; Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000");
         cookies.flush();
     }
 

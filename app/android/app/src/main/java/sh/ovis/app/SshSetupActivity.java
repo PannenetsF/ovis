@@ -84,6 +84,8 @@ public class SshSetupActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // a private key, a passphrase or a password may be on this screen: no screenshots, no Recents thumbnail
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
         getWindow().setStatusBarColor(BACKGROUND);
         getWindow().setNavigationBarColor(BACKGROUND);
         editing = SshPcs.on(this).get(getIntent().getStringExtra(EXTRA_ORIGIN));
@@ -228,7 +230,10 @@ public class SshSetupActivity extends Activity {
         ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
         if (clip == null || clip.getItemCount() == 0) return;
         CharSequence text = clip.getItemAt(0).coerceToText(this);
-        if (text != null) privateKey.setText(text);
+        if (text == null) return;
+        privateKey.setText(text);
+        // a private key does not stay on the clipboard for the next app to read
+        if (SshKeys.precheck(text.toString()) == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) clipboard.clearPrimaryClip();
     }
 
     /** What the pasted text is, at once and without its passphrase (the slow part waits for Connect). */
@@ -437,10 +442,7 @@ public class SshSetupActivity extends Activity {
             if (!SshLink.answersAsOvis(connection, ovisPort)) throw new SshFailure("not-ovis", "Not Ovis");
 
             SshPcs.Pc pc = before != null ? before : new SshPcs.Pc();
-            if (before == null) {
-                pc.origin = store.freeOrigin();
-                pc.gate = SshPcs.newGate();
-            }
+            if (before == null) pc.origin = store.freeOrigin();
             pc.host = address;
             pc.port = sshPort;
             pc.user = account;
@@ -455,8 +457,8 @@ public class SshSetupActivity extends Activity {
                 pc.keyType = "";
             }
             store.put(pc);
+            // the PC's tunnel starts again with what was saved here, and its new gate, when the app reopens (OvisSshPlugin.listen)
             SshTunnels.closeFor(pc.origin);
-            OvisSshPlugin.setGate(pc);
             if (before == null) PCStore.setName(this, pc.origin, where + " (SSH)");
             PCStore.open(this, pc.origin, pc.origin + "/");
             PCStore.fail(null, null);
@@ -495,7 +497,7 @@ public class SshSetupActivity extends Activity {
             if (!confirm(getString(R.string.ssh_install_title, where), getString(R.string.ssh_install_message, SshLink.INSTALL_COMMAND), getString(R.string.ssh_install_yes), "confirm-install")) throw none;
             tell("installing");
             say(getString(R.string.ssh_installing, address, ""), true);
-            return SshLink.install(connection, line -> say(getString(R.string.ssh_installing, address, line.length() > 160 ? line.substring(0, 160) + "…" : line), true), 120_000, System::currentTimeMillis);
+            return SshLink.install(connection, line -> say(getString(R.string.ssh_installing, address, line.length() > 160 ? line.substring(0, 160) + "…" : line), true), 120_000, android.os.SystemClock::elapsedRealtime);
         }
     }
 

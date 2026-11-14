@@ -281,6 +281,13 @@ async function load() {
     catch { /* an app without the plugin lists its PCs as before */ }
   }
   renderSaved(savedOrigins, state.last ?? "", state.names ?? {});
+  // an SSH PC whose address on this phone another app took first is not opened (OvisSshPlugin.listen)
+  if (state.kind === "ssh-port") {
+    error.textContent = t(
+      `Another app on this phone took the address the SSH PC opens on (${state.failure}), so the app did not open it: that app would have answered in its place. Close or uninstall the app you do not know, or restart the phone, then open the PC again.`,
+      `이 휴대폰의 다른 앱이 SSH PC가 열리는 주소(${state.failure})를 먼저 차지해서 열지 않았습니다. 그 앱이 대신 응답할 수 있기 때문입니다. 모르는 앱을 닫거나 지우거나 휴대폰을 다시 시작한 뒤 PC를 다시 여세요.`,
+    );
+  }
 }
 
 void load();
