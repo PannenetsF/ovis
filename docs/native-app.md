@@ -571,6 +571,105 @@ Still open on Android:
 
 - QR scanning and IME were not tried in the emulator; a physical phone should check them.
 
+### PCs over SSH
+
+The Android app can add a PC the person already reaches over SSH: **Add over SSH** on the connect
+screen. The phone talks to the PC's sshd itself (ConnectBot's `sshlib`, BSD-3-Clause), with no Ovis
+relay, no account and no port open but SSH. A user guide is [ssh-from-phone.md](ssh-from-phone.md);
+the iOS plan is [ios-ssh-plan.md](ios-ssh-plan.md). Nothing in `server/` or `shared/` changes: the PC
+runs the Ovis it already has.
+
+How a page gets there (`app/android/app/src/main/java/sh/ovis/app/Ssh*.java`, `OvisSshPlugin`):
+
+- Each SSH PC is saved under a loopback origin of its own on the phone,
+  `http://127.0.0.<n>:47317` (`SshPcs.freeOrigin`, n from 2), so its cookies, storage, drafts and
+  service worker stay apart from every other PC's and stay put across restarts. `SshTunnel` listens
+  there; each connection the WebView makes becomes an SSH direct-tcpip channel to the PC's own Ovis
+  on its 127.0.0.1. That Ovis sees a request from its own loopback with no proxy headers and lets it
+  in as its own PC's (`server/access.ts`, `local`): no token is typed or kept.
+- The PC's Ovis is found as the PC flow finds it (`server/remote-host.ts`): the live bridge
+  descriptors in `~/.config/herdr-web-ui/bridges/`, herdr's default session first, never a
+  bridge-only server another PC's Ovis started (`managed_remote`). One installed but stopped is
+  started through its launcher (the herdr plugin, `ovis.service`, the launchd agent); a plugin whose
+  herdr is not running gets a headless `herdr server`, as `server/pc-install.ts` does.
+- Other apps on the phone can reach its loopback too, so the first request on each connection must
+  carry the PC's gate cookie (`ovis_ssh_gate`, 256 random bits, HttpOnly, SameSite=Strict, on that
+  origin only), which the app sets through `CookieManager`; anything else gets 403 and nothing
+  reaches the PC.
+- Lifetime (`SshTunnel`, each rule checked in `SshTunnelTest` with the clock and the SSH side
+  injected): the SSH connection is made when a request needs it and again after it ended (the app
+  in the background, a network change, which `SshTunnels` watches and answers by dropping every
+  connection), asking nothing. A request is passed on once, as it came, so a request cut by a drop is
+  never sent again; what was typed stays a draft in the page. A failure answers the page's burst at
+  once for 2 s, then is tried again; a stop (the host key changed, the key refused, a key the phone
+  can no longer open) is never tried again until the PC is set up again. Coming back to the app
+  pings the connection and makes a new one before the page asks.
+- No foreground service. Without one the connection ends some time after the app leaves the screen
+  and is made again on return, which takes about a second on a LAN; a foreground service would keep
+  it at the cost of a permanent notification and Play's `specialUse` declaration with a video, for
+  nothing the person sees.
+
+Keys and host keys (`SshPcs`, `SshVault`, `SshKeys`, `SshHostKeys`; `SshPcsTest`, `SshKeysTest`,
+`SshHostKeysTest`):
+
+- The phone's own ed25519 key is made on first use. Its seed is sealed with AES-GCM under a
+  256-bit key that lives in the Android Keystore and never leaves it (`SshVault`); only the public
+  line leaves the app (`ssh-ed25519 … ovis-phone:<model>`). Android's Keystore cannot hold an
+  ed25519 key on every phone, hence a sealed software key. A seed the phone can no longer open
+  (`key-lost`) is never replaced quietly: setting the PC up again makes a new one.
+- A pasted private key and its passphrase are sealed the same way. The app reads OpenSSH keys
+  (bcrypt-encrypted or not) and PEM keys (`RSA`/`EC PRIVATE KEY`, encrypted or not); ed25519, RSA
+  and ECDSA; it refuses DSA, and says how to convert PKCS#8 (`ssh-keygen -p -f key`) and PuTTY
+  keys. A paste is read before anything goes to the network, so a wrong passphrase is told at once.
+- A password is used once, to add the phone's key to `~/.ssh/authorized_keys` there; the key is
+  then proven by signing in with it, and the password is never stored. Keyboard-interactive gets the
+  password only for a single password prompt, never for a one-time code.
+- Host keys: nothing is sent to a host whose key the person has not confirmed (its SHA-256
+  fingerprint, as `ssh-keygen -lf` prints it). A saved key is pinned with its algorithm; any other
+  key, or a saved key that cannot be read, fails closed with no way past it but **Forget host key**
+  under Manage, after which opening the PC shows the new fingerprint to confirm.
+- Backups stay off (`allowBackup="false"`), so none of it reaches a Google backup either.
+
+Manage (`app/web/connect.js`): an SSH PC in Your PCs has Manage instead of Forget: rename, show
+the phone's key line again (with Copy), set up again (another way to sign in, another key, the
+phone's key registered again; the PC keeps its origin), forget its host key, and remove it, which can
+also take the phone's key out of the PC's `authorized_keys`: only the lines whose key field is that
+key, the file's mode kept, and only when no other saved PC may sign in to the same account with it
+(the same user on the same host name or behind the same host key).
+
+Errors: the setup screen says each failure in words with what to do (`SshWords`, strings in
+`res/values/ssh_strings.xml` and `values-ko`). For an SSH PC that is open, the tunnel's failure
+goes to `error.html` with its kind (`ssh-<kind>` in `PCStore.failureKind`) and the one command that
+fixes it on the PC (`PCStore.failureCommand`, shown to copy): the host key changed, the key refused,
+the PC out of reach, Ovis not installed (the install command) or not started (its launcher's
+command). The tunnel's 503 carries `X-Ovis-Ssh: <kind>`, so `MainActivity` keeps that reason rather
+than the bare status, and a stop while the page is up takes the page to `error.html` too.
+
+First install from the phone: where the account has no Ovis, the setup screen offers to install it.
+The PC flow's remote bundle (`scripts/build-remote-bundle.ts`) cannot serve the phone: it starts a
+bridge-only server, whose token only the PC that installed it has, with no app of its own to open.
+The phone drives the PC flow's other path instead, the official installer as one SSH command
+(`SshLink.INSTALLER_RUN`, the same command shape as `installerRun` in `server/pc-install.ts`, with
+its checks for curl, git, tar, a writable home and 1 GB free), then starts Ovis and opens it.
+MEASURED-INSTALL
+
+Tests: the JVM tests above run with `./gradlew :app:testDebugUnitTest`.
+`scripts/fixtures/phone-ssh/emulator-run.sh [--bare]` is the emulator run: it starts the disposable
+fixture (sshd, herdr, Ovis and a stand-in agent in Docker), authorizes the test-only keys, starts an
+emulator when none runs, and runs the instrumented `SshFixtureTest` (the real Keystore, every key
+format signing in, the host-key rule, the password-once registration and its removal, the tunnel's
+gate and stop) and `SshSetupFlowTest` (the setup screen with a pasted, passphrase-protected key);
+`--bare` adds the first install on a fixture with neither herdr nor Ovis.
+
+MEASURED-SIZE
+
+Not tried yet: a real phone (only the emulator), a real Wi-Fi to mobile data switch, push alerts
+from an SSH PC (they come from the PC's own Ovis, so they should work, unchecked), a PC whose Ovis
+has `OVIS_TOKEN` set (its sign-in page shows), a named herdr session, Windows, jump hosts and
+`~/.ssh/config` aliases. The PC's Ovis menu names an SSH PC "local", as Ovis sees itself; and an
+sshd session cut by a dropped network stays on the PC until its TCP keepalive (or `ClientAlive`)
+ends it.
+
 ## Through the Ovis relay
 
 A PC can also be reached through the [Ovis relay](relay.md), which is off by default and end-to-end
