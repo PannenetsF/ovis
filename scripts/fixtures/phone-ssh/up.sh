@@ -2,12 +2,14 @@
 # Build and start the disposable phone-ssh fixture container (see claude-standin.py for the agent).
 #   ssh -p 2290 fixture@127.0.0.1   password: phone-ssh-test-only   (host loopback only)
 #   Ovis inside listens on the container's 127.0.0.1:7317: reach it with ssh -L.
+# PHONE_SSH_WORK names the scratch folder (default ~/.cache/ovis-tmp/phone-ssh). up-bare.sh starts
+# a second one with neither herdr nor Ovis, for the first install from the phone.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../../.." && pwd)
 name=ovis-phone-ssh-fixture
 image=ovis-phone-ssh-fixture:local
-work=$HOME/.cache/ovis-tmp/phone-ssh
+work=${PHONE_SSH_WORK:-$HOME/.cache/ovis-tmp/phone-ssh}
 ctx=$work/ctx
 mkdir -p "$work/tmp" "$ctx/bin"
 export TMPDIR=$work/tmp
@@ -29,7 +31,7 @@ rsync -a --delete \
   "$repo/" "$ctx/ovis/"
 
 cpuset=()
-docker build --help 2>/dev/null | grep -q -- --cpuset-cpus && cpuset=(--cpuset-cpus 80-95)
+docker build --help 2>/dev/null | grep -q -- --cpuset-cpus && cpuset=(--cpuset-cpus "${OVIS_HEAVY_CPUS:-80-95}")
 docker build "${cpuset[@]}" -t "$image" "$ctx"
 
 docker rm -f "$name" >/dev/null 2>&1 || true
