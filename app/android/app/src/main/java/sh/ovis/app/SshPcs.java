@@ -1,51 +1,115 @@
 package sh.ovis.app;
 
-import android.content.Context;
-import android.content.SharedPreferences;
-import android.util.Base64;
 import com.trilead.ssh2.crypto.keys.Ed25519KeyPairGenerator;
 import com.trilead.ssh2.crypto.keys.Ed25519PrivateKey;
 import com.trilead.ssh2.crypto.keys.Ed25519PublicKey;
-import com.trilead.ssh2.signature.Ed25519Verify;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
- * The PCs added over SSH. Each is saved in PCStore under its own loopback origin on this phone
- * (`http://127.0.0.<n>:47317`, SshTunnel listens there); this store keeps how to reach it: address,
- * account, the host key confirmed when it was added, and how the app signs in. A distinct 127.0.0.n
- * per PC keeps each PC's cookies and storage apart, as cookies do not separate ports.
+ * The PCs added over SSH and this phone's own SSH key: the key store. Each PC is saved in PCStore under
+ * its own loopback origin on this phone (`http://127.0.0.<n>:47317`, where SshTunnel listens); this
+ * store keeps how to reach it: address, account, the host key confirmed when it was added, the gate
+ * cookie, and how the app signs in. A distinct 127.0.0.n per PC keeps each PC's cookies and storage
+ * apart, as cookies do not separate ports.
+ *
+ * <p>Secrets never rest in the clear: this phone's ed25519 seed, a pasted private key and its
+ * passphrase are sealed (`Sealer`, on the phone SshVault: AES-GCM under a key in the Android
+ * Keystore that never leaves it). A password is never stored. Plain Java over two small seams
+ * (`Prefs`, `Sealer`), so SshPcsTest runs it on the JVM; `on(Context)` is the phone's.
  */
 final class SshPcs {
     static final int LOCAL_PORT = 47317;
-    private static final String PREFS = "ovis-ssh";
 
-    private SshPcs() {}
+    /** Text values by name, written together. The phone's is SharedPreferences "ovis-ssh". */
+    interface Prefs {
+        String get(String name);
+
+        /** Writes every entry at once, a null value removing its name; false when the write did not land. */
+        boolean put(Map<String, String> values);
+    }
+
+    /** Seals and opens secrets; the phone's is SshVault. */
+    interface Sealer {
+        String seal(byte[] plain) throws GeneralSecurityException;
+
+        byte[] open(String sealed) throws GeneralSecurityException;
+    }
+
+    /** One lock for every store over the same preferences: the plugin, the setup screen and the tunnels' threads share them. */
+    private static final Object LOCK = new Object();
+
+    private final Prefs prefs;
+    private final Sealer sealer;
+
+    SshPcs(Prefs prefs, Sealer sealer) {
+        this.prefs = prefs;
+        this.sealer = sealer;
+    }
+
+    /** The phone's store: SharedPreferences "ovis-ssh", sealed by SshVault. */
+    static SshPcs on(android.content.Context context) {
+        android.content.SharedPreferences shared = context.getApplicationContext().getSharedPreferences("ovis-ssh", android.content.Context.MODE_PRIVATE);
+        return new SshPcs(
+            new Prefs() {
+                @Override
+                public String get(String name) {
+                    return shared.getString(name, null);
+                }
+
+                @Override
+                public boolean put(Map<String, String> values) {
+                    android.content.SharedPreferences.Editor edit = shared.edit();
+                    for (Map.Entry<String, String> entry : values.entrySet()) {
+                        if (entry.getValue() == null) edit.remove(entry.getKey());
+                        else edit.putString(entry.getKey(), entry.getValue());
+                    }
+                    return edit.commit();
+                }
+            },
+            SshVault.SEALER
+        );
+    }
 
     static final class Pc {
         String origin;
         String host;
         int port;
         String user;
-        String hostKeyAlgorithm;
-        String hostKey;
+        String hostKeyAlgorithm = "";
+        String hostKey = "";
         /** the secret cookie the WebView carries to the tunnel (SshTunnel): any other app on the phone lacks it */
         String gate;
-        String auth;
-        String importedKey;
-        String importedPassphrase;
+        /** "phone-key" or "imported" */
+        String auth = "phone-key";
+        /** sealed, "" unless auth is "imported" */
+        String importedKey = "";
+        /** sealed, "" when the key has none */
+        String importedPassphrase = "";
+        /** what the imported key is, for the screens: "ed25519", "rsa 3072", "ecdsa 256"; "" for the phone's key */
+        String keyType = "";
 
         String loopbackHost() {
-            return android.net.Uri.parse(origin).getHost();
+            return java.net.URI.create(origin).getHost();
         }
 
         String label() {
             return user + "@" + host + (port == 22 ? "" : ":" + port);
+        }
+
+        boolean hasHostKey() {
+            return hostKey != null && !hostKey.isEmpty();
         }
 
         JSONObject json() throws JSONException {
@@ -58,8 +122,9 @@ final class SshPcs {
                 .put("hostKey", hostKey)
                 .put("gate", gate)
                 .put("auth", auth)
-                .put("importedKey", importedKey == null ? "" : importedKey)
-                .put("importedPassphrase", importedPassphrase == null ? "" : importedPassphrase);
+                .put("importedKey", importedKey)
+                .put("importedPassphrase", importedPassphrase)
+                .put("keyType", keyType);
         }
 
         static Pc of(JSONObject json) {
@@ -74,55 +139,96 @@ final class SshPcs {
             pc.auth = json.optString("auth", "phone-key");
             pc.importedKey = json.optString("importedKey", "");
             pc.importedPassphrase = json.optString("importedPassphrase", "");
+            pc.keyType = json.optString("keyType", "");
             return pc;
         }
     }
 
-    private static SharedPreferences prefs(Context context) {
-        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-    }
-
-    private static JSONObject all(Context context) {
+    private JSONObject all() {
+        String saved = prefs.get("pcs");
         try {
-            return new JSONObject(prefs(context).getString("pcs", "{}"));
+            return new JSONObject(saved == null ? "{}" : saved);
         } catch (JSONException damaged) {
             return new JSONObject();
         }
     }
 
-    static Pc get(Context context, String origin) {
+    private void write(JSONObject pcs) {
+        Map<String, String> values = new HashMap<>();
+        values.put("pcs", pcs.toString());
+        if (!prefs.put(values)) throw new IllegalStateException("This phone could not save its SSH PCs");
+    }
+
+    Pc get(String origin) {
         if (origin == null) return null;
-        JSONObject json = all(context).optJSONObject(origin);
-        return json == null ? null : Pc.of(json);
+        synchronized (LOCK) {
+            JSONObject json = all().optJSONObject(origin);
+            return json == null ? null : Pc.of(json);
+        }
     }
 
-    static synchronized void put(Context context, Pc pc) throws JSONException {
-        JSONObject pcs = all(context);
-        pcs.put(pc.origin, pc.json());
-        prefs(context).edit().putString("pcs", pcs.toString()).apply();
+    void put(Pc pc) {
+        synchronized (LOCK) {
+            JSONObject pcs = all();
+            try {
+                pcs.put(pc.origin, pc.json());
+            } catch (JSONException impossible) {
+                throw new IllegalStateException(impossible);
+            }
+            write(pcs);
+        }
     }
 
-    static synchronized void remove(Context context, String origin) {
-        JSONObject pcs = all(context);
-        pcs.remove(origin);
-        prefs(context).edit().putString("pcs", pcs.toString()).apply();
+    /** Forgets the PC, its sealed key and passphrase with it. */
+    void remove(String origin) {
+        synchronized (LOCK) {
+            JSONObject pcs = all();
+            pcs.remove(origin);
+            write(pcs);
+        }
     }
 
-    static Pc find(Context context, String host, int port, String user) {
-        JSONObject pcs = all(context);
-        for (Iterator<String> keys = pcs.keys(); keys.hasNext(); ) {
-            Pc pc = Pc.of(pcs.optJSONObject(keys.next()));
+    /**
+     * Forgets the PC's host key on purpose (Manage on the connect screen): nothing connects to it
+     * until the setup screen shows the key it has now and the person confirms it.
+     */
+    void forgetHostKey(String origin) {
+        synchronized (LOCK) {
+            Pc pc = get(origin);
+            if (pc == null) return;
+            pc.hostKeyAlgorithm = "";
+            pc.hostKey = "";
+            put(pc);
+        }
+    }
+
+    Pc find(String host, int port, String user) {
+        for (Pc pc : list()) {
             if (pc.host.equalsIgnoreCase(host) && pc.port == port && pc.user.equals(user)) return pc;
         }
         return null;
     }
 
+    List<Pc> list() {
+        List<Pc> list = new ArrayList<>();
+        synchronized (LOCK) {
+            JSONObject pcs = all();
+            for (Iterator<String> keys = pcs.keys(); keys.hasNext(); ) {
+                JSONObject json = pcs.optJSONObject(keys.next());
+                if (json != null) list.add(Pc.of(json));
+            }
+        }
+        return list;
+    }
+
     /** A loopback origin no saved SSH PC uses: 127.0.0.2 upward (127.0.0.1 stays for whatever else runs on the phone). */
-    static synchronized String freeOrigin(Context context) {
-        JSONObject pcs = all(context);
-        for (int n = 2; n < 255; n++) {
-            String origin = "http://127.0.0." + n + ":" + LOCAL_PORT;
-            if (!pcs.has(origin)) return origin;
+    String freeOrigin() {
+        synchronized (LOCK) {
+            JSONObject pcs = all();
+            for (int n = 2; n < 255; n++) {
+                String origin = "http://127.0.0." + n + ":" + LOCAL_PORT;
+                if (!pcs.has(origin)) return origin;
+            }
         }
         throw new IllegalStateException("No loopback address is left for another SSH PC");
     }
@@ -131,40 +237,81 @@ final class SshPcs {
         byte[] bytes = new byte[32];
         new SecureRandom().nextBytes(bytes);
         StringBuilder hex = new StringBuilder();
-        for (byte b : bytes) hex.append(String.format("%02x", b));
+        for (byte b : bytes) hex.append(String.format(Locale.ROOT, "%02x", b));
         return hex.toString();
     }
 
-    static List<Pc> list(Context context) {
-        List<Pc> list = new ArrayList<>();
-        JSONObject pcs = all(context);
-        for (Iterator<String> keys = pcs.keys(); keys.hasNext(); ) list.add(Pc.of(pcs.optJSONObject(keys.next())));
-        return list;
+    /** Seals a pasted key and its passphrase into `pc` (auth "imported"). */
+    void sealImported(Pc pc, String pem, String passphrase, String keyType) throws SshFailure {
+        try {
+            pc.importedKey = sealer.seal(pem.getBytes(StandardCharsets.UTF_8));
+            pc.importedPassphrase = passphrase == null || passphrase.isEmpty() ? "" : sealer.seal(passphrase.getBytes(StandardCharsets.UTF_8));
+        } catch (GeneralSecurityException failed) {
+            throw new SshFailure("internal", "This phone could not seal the key: " + SshFailure.rootMessage(failed));
+        }
+        pc.auth = "imported";
+        pc.keyType = keyType;
+    }
+
+    /** The pasted key saved for `pc`, opened: `key-unreadable` when this phone can no longer open it. */
+    KeyPair importedKey(Pc pc) throws SshFailure {
+        String pem;
+        String passphrase;
+        try {
+            pem = new String(sealer.open(pc.importedKey), StandardCharsets.UTF_8);
+            passphrase = pc.importedPassphrase.isEmpty() ? null : new String(sealer.open(pc.importedPassphrase), StandardCharsets.UTF_8);
+        } catch (GeneralSecurityException | IllegalArgumentException lost) {
+            throw new SshFailure("key-unreadable", SshFailure.rootMessage(lost));
+        }
+        return SshKeys.read(pem, passphrase).pair;
     }
 
     /**
-     * This phone's own ed25519 key, made on first use. Its seed is sealed by SshVault; only the public
-     * key ever leaves the app (shown to paste into authorized_keys, or added there after a password sign-in).
+     * This phone's own ed25519 key, made on first use. Its seed is sealed; only the public key ever
+     * leaves the app (shown to paste into authorized_keys, or added there after a password sign-in).
+     * A seed this phone can no longer open fails with `key-lost` (renewPhoneKey makes another).
      */
-    static synchronized KeyPair phoneKey(Context context) throws Exception {
-        SharedPreferences prefs = prefs(context);
-        String sealed = prefs.getString("phoneKeySeed", null);
-        String pub = prefs.getString("phoneKeyPublic", null);
-        if (sealed == null || pub == null) {
+    KeyPair phoneKey() throws SshFailure {
+        synchronized (LOCK) {
+            String sealed = prefs.get("phoneKeySeed");
+            String pub = prefs.get("phoneKeyPublic");
+            if (sealed == null && pub == null) return renewPhoneKey();
+            // half a key is a key lost, never a reason to make another one quietly
+            if (sealed == null || pub == null) throw new SshFailure("key-lost", "Half of this phone's key is missing");
+            try {
+                return new KeyPair(new Ed25519PublicKey(Base64.getDecoder().decode(pub)), new Ed25519PrivateKey(sealer.open(sealed)));
+            } catch (GeneralSecurityException | IllegalArgumentException lost) {
+                throw new SshFailure("key-lost", SshFailure.rootMessage(lost));
+            }
+        }
+    }
+
+    /** Replaces this phone's key with a new one: every PC that knew the old one has to be registered again. */
+    KeyPair renewPhoneKey() throws SshFailure {
+        synchronized (LOCK) {
             KeyPair made = new Ed25519KeyPairGenerator().generateKeyPair();
             byte[] seed = ((Ed25519PrivateKey) made.getPrivate()).getSeed();
             byte[] raw = ((Ed25519PublicKey) made.getPublic()).getAbyte();
-            sealed = SshVault.seal(seed);
-            pub = Base64.encodeToString(raw, Base64.NO_WRAP);
-            prefs.edit().putString("phoneKeySeed", sealed).putString("phoneKeyPublic", pub).commit();
+            Map<String, String> values = new HashMap<>();
+            // the seed is the key's own array (getSeed): it stays as it is, or the key made here signs nothing
+            try {
+                values.put("phoneKeySeed", sealer.seal(seed));
+            } catch (GeneralSecurityException failed) {
+                throw new SshFailure("internal", "This phone could not seal its key: " + SshFailure.rootMessage(failed));
+            }
+            values.put("phoneKeyPublic", Base64.getEncoder().encodeToString(raw));
+            if (!prefs.put(values)) throw new SshFailure("internal", "This phone could not save its key");
+            return made;
         }
-        return new KeyPair(new Ed25519PublicKey(Base64.decode(pub, Base64.NO_WRAP)), new Ed25519PrivateKey(SshVault.open(sealed)));
     }
 
-    static String phoneKeyLine(Context context) throws Exception {
-        KeyPair pair = phoneKey(context);
-        byte[] blob = Ed25519Verify.get().encodePublicKey(pair.getPublic());
-        String model = android.os.Build.MODEL == null ? "phone" : android.os.Build.MODEL.replaceAll("[^A-Za-z0-9._-]", "-");
-        return "ssh-ed25519 " + Base64.encodeToString(blob, Base64.NO_WRAP) + " ovis-phone:" + model;
+    /** The comment on this phone's key line: `ovis-phone:<model>`, so it can be told apart in authorized_keys. */
+    static String phoneComment(String model) {
+        String name = model == null || model.isEmpty() ? "phone" : model.replaceAll("[^A-Za-z0-9._-]", "-");
+        return "ovis-phone:" + name;
+    }
+
+    String phoneKeyLine(String model) throws SshFailure {
+        return SshKeys.publicLine(phoneKey().getPublic(), phoneComment(model));
     }
 }

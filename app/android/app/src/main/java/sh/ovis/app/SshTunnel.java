@@ -1,10 +1,5 @@
 package sh.ovis.app;
 
-import android.content.Context;
-import android.net.ConnectivityManager;
-import android.net.Network;
-import com.trilead.ssh2.Connection;
-import com.trilead.ssh2.LocalStreamForwarder;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -15,143 +10,124 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.HashMap;
 import java.util.Locale;
-import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.LongSupplier;
 
 /**
- * The WebView's way to an SSH PC: a listener on the PC's loopback origin on this phone, each of whose
- * connections becomes an SSH direct-tcpip channel to the PC's own Ovis on its 127.0.0.1. That Ovis
+ * The WebView's way to one SSH PC: a listener on the PC's loopback origin on this phone, each of whose
+ * connections becomes an SSH channel (direct-tcpip) to the PC's own Ovis on its 127.0.0.1. That Ovis
  * sees a request from its own loopback with no proxy headers, which it lets in as its own PC's
  * (server/access.ts decideAccess, `local`): no token is typed or kept.
  *
- * Every app on the phone can reach the phone's loopback, so a connection is passed on only when its
+ * <p>Every app on the phone can reach the phone's loopback, so a connection is passed on only when its
  * first request carries the PC's gate cookie, which the app put in the WebView's cookie store and no
  * other app can read; anything else gets 403 and nothing reaches the PC.
  *
- * The SSH connection is made when the first request needs it, and again after it ended (the app in
- * the background, a network change): reconnecting asks nothing, with the key and host key saved when
- * the PC was added. A changed host key or a refused key stops it until the PC is added again.
+ * <p>Lifetime rules (SshTunnelTest checks each, with this class's clock and dialer injected):
+ * <ul>
+ *   <li>the SSH connection is made when a request needs it, never before, and made again on the next
+ *       request after it ended (the app in the background, a network change: `drop`), asking nothing;</li>
+ *   <li>a request is passed on once, as it came: a request cut by a drop is never sent again, so
+ *       nothing typed is sent twice (the page keeps it as a draft);</li>
+ *   <li>a failure is answered at once, for RETRY_AFTER_MS, to every request of the page's burst, then
+ *       tried again; a stop (SshFailure.stops: the host key, the key refused) is never tried again by
+ *       this tunnel: only setting the PC up again makes another;</li>
+ *   <li>`wake` (the app back in front) checks a connection with a ping and makes a new one before the
+ *       page asks, when it no longer answers.</li>
+ * </ul>
+ * A failed request gets 503 with an `X-Ovis-Ssh` header naming the failure's kind; the listener hears
+ * every failure, so the app's error page can say what happened and what to do.
  */
 final class SshTunnel {
     static final String GATE_COOKIE = "ovis_ssh_gate";
+    static final String FAILURE_HEADER = "X-Ovis-Ssh";
     /** a failure is not retried for this long: the page's burst of requests gets the same answer at once */
-    private static final long RETRY_AFTER_MS = 2_000;
+    static final long RETRY_AFTER_MS = 2_000;
     private static final int HEAD_LIMIT = 64 * 1024;
 
-    interface FailureListener {
-        void onFailure(SshPcs.Pc pc, SshLink.Failure failure);
+    /** One SSH connection made for the tunnel, to the PC's Ovis. */
+    interface Link {
+        /** A new channel to the PC's Ovis. */
+        Channel open() throws IOException;
+
+        /** Looks up the PC's Ovis again (it may have restarted on another port). */
+        void relocate() throws SshFailure;
+
+        /** Whether the connection still answers, within a few seconds. */
+        boolean alive();
+
+        void close();
+
+        /** Runs `ended` once the connection ends, whoever ends it. */
+        void onEnd(Runnable ended);
     }
 
-    private static final Map<String, SshTunnel> tunnels = new HashMap<>();
-    static volatile FailureListener listener;
-    private static ConnectivityManager.NetworkCallback networkWatch;
+    interface Channel {
+        InputStream input() throws IOException;
 
-    private final Context app;
-    private final SshPcs.Pc pc;
+        OutputStream output() throws IOException;
+
+        void close();
+    }
+
+    /** Connects, signs in and finds the PC's Ovis: a Link, or why not. */
+    interface Dialer {
+        Link dial() throws SshFailure;
+    }
+
+    interface Listener {
+        void onFailure(SshFailure failure);
+    }
+
+    private final String gate;
+    private final InetAddress bindHost;
+    private final int bindPort;
+    private final Dialer dialer;
+    private final LongSupplier clock;
+    private final Listener listener;
     private final ExecutorService pipes = Executors.newCachedThreadPool(task -> {
         Thread thread = new Thread(task, "ovis-ssh-pipe");
         thread.setDaemon(true);
         return thread;
     });
     private ServerSocket server;
-    private Connection connection;
-    private int remotePort;
-    private SshLink.Failure lastFailure;
+    private Link link;
+    private SshFailure lastFailure;
     private long failedAt;
-    /** a host key or a sign-in that failed: nothing is tried again until the PC is added again */
-    private SshLink.Failure stopped;
+    private SshFailure stopped;
 
-    private SshTunnel(Context app, SshPcs.Pc pc) {
-        this.app = app;
-        this.pc = pc;
+    SshTunnel(String gate, InetAddress bindHost, int bindPort, Dialer dialer, LongSupplier clock, Listener listener) {
+        this.gate = gate;
+        this.bindHost = bindHost;
+        this.bindPort = bindPort;
+        this.dialer = dialer;
+        this.clock = clock;
+        this.listener = listener;
     }
 
-    /** The tunnel for `pc`, listening: started on first use, kept for the process's life. */
-    static synchronized SshTunnel open(Context context, SshPcs.Pc pc) throws IOException {
-        SshTunnel tunnel = tunnels.get(pc.origin);
-        if (tunnel != null && tunnel.pc.hostKey.equals(pc.hostKey) && tunnel.pc.gate.equals(pc.gate) && tunnel.pc.auth.equals(pc.auth)) return tunnel;
-        if (tunnel != null) tunnel.close();
-        tunnel = new SshTunnel(context.getApplicationContext(), pc);
-        tunnel.listen();
-        tunnels.put(pc.origin, tunnel);
-        watchNetwork(context.getApplicationContext());
-        return tunnel;
-    }
-
-    static synchronized void closeAll() {
-        for (SshTunnel tunnel : tunnels.values()) tunnel.close();
-        tunnels.clear();
-    }
-
-    static synchronized void closeFor(String origin) {
-        SshTunnel tunnel = tunnels.remove(origin);
-        if (tunnel != null) tunnel.close();
-    }
-
-    /** The app came back: a connection that no longer answers is dropped and made again before the page asks. */
-    static void wakeAll() {
-        SshTunnel[] all;
-        synchronized (SshTunnel.class) {
-            all = tunnels.values().toArray(new SshTunnel[0]);
-        }
-        for (SshTunnel tunnel : all) new Thread(tunnel::wake, "ovis-ssh-wake").start();
-    }
-
-    private static void watchNetwork(Context app) {
-        if (networkWatch != null) return;
-        ConnectivityManager manager = app.getSystemService(ConnectivityManager.class);
-        if (manager == null) return;
-        networkWatch = new ConnectivityManager.NetworkCallback() {
-            private Network current;
-
-            @Override
-            public void onAvailable(Network network) {
-                Network before = current;
-                current = network;
-                // the first call names the network there already is; a later one is a switch, and
-                // the connection made over the network before may never hear that it is gone
-                if (before != null && !before.equals(network)) dropAll();
-            }
-
-            @Override
-            public void onLost(Network network) {
-                if (network.equals(current)) current = null;
-                dropAll();
-            }
-        };
-        manager.registerDefaultNetworkCallback(networkWatch);
-    }
-
-    private static void dropAll() {
-        SshTunnel[] all;
-        synchronized (SshTunnel.class) {
-            all = tunnels.values().toArray(new SshTunnel[0]);
-        }
-        for (SshTunnel tunnel : all) tunnel.drop();
-    }
-
-    private void listen() throws IOException {
+    /** Starts listening; the port it listens on (bindPort, or the one picked for 0). */
+    int listen() throws IOException {
         server = new ServerSocket();
         server.setReuseAddress(true);
-        server.bind(new InetSocketAddress(InetAddress.getByName(pc.loopbackHost()), SshPcs.LOCAL_PORT), 64);
+        server.bind(new InetSocketAddress(bindHost, bindPort), 64);
         Thread accept = new Thread(() -> {
             while (!server.isClosed()) {
                 try {
                     Socket client = server.accept();
                     pipes.execute(() -> serve(client));
-                } catch (IOException closed) {
+                } catch (IOException | java.util.concurrent.RejectedExecutionException closed) {
                     return;
                 }
             }
         }, "ovis-ssh-accept");
         accept.setDaemon(true);
         accept.start();
+        return server.getLocalPort();
     }
 
-    private void close() {
+    void close() {
         try {
             if (server != null) server.close();
         } catch (IOException ignored) {
@@ -161,114 +137,97 @@ final class SshTunnel {
         pipes.shutdownNow();
     }
 
-    private synchronized void drop() {
-        if (connection != null) connection.close();
-        connection = null;
+    /** Ends the SSH connection (a network change): the next request makes a new one. */
+    void drop() {
+        Link was;
+        synchronized (this) {
+            was = link;
+            link = null;
+        }
+        if (was != null) was.close();
     }
 
-    private void wake() {
-        Connection now;
+    /** The app came back: a connection that no longer answers is dropped and made again before the page asks. */
+    void wake() {
+        Link now;
         synchronized (this) {
-            now = connection;
+            now = link;
         }
-        if (now != null && !answers(now)) {
+        if (now != null && !now.alive()) {
             synchronized (this) {
-                if (connection == now) drop();
+                if (link == now) link = null;
             }
+            now.close();
         }
         try {
             ready();
-        } catch (SshLink.Failure failed) {
-            // told to the page's next request, and to the listener for the stops
+        } catch (SshFailure failed) {
+            // the page's next request is told, and the listener was
         }
     }
 
-    private static boolean answers(Connection connection) {
-        final boolean[] answered = { false };
-        Thread ping = new Thread(() -> {
-            try {
-                connection.ping();
-                answered[0] = true;
-            } catch (IOException gone) {
-                // not answered
-            }
-        }, "ovis-ssh-ping");
-        ping.setDaemon(true);
-        ping.start();
-        try {
-            ping.join(4_000);
-        } catch (InterruptedException stopped) {
-            Thread.currentThread().interrupt();
-        }
-        return answered[0];
+    synchronized SshFailure stoppedBy() {
+        return stopped;
     }
 
-    private synchronized Connection ready() throws SshLink.Failure {
-        if (stopped != null) throw stopped;
-        if (connection != null) return connection;
-        if (lastFailure != null && System.currentTimeMillis() - failedAt < RETRY_AFTER_MS) throw lastFailure;
-        Connection made = null;
+    private synchronized Link ready() throws SshFailure {
+        if (stopped != null) {
+            listener.onFailure(stopped);
+            throw stopped;
+        }
+        if (link != null) return link;
+        if (lastFailure != null && clock.getAsLong() - failedAt < RETRY_AFTER_MS) {
+            listener.onFailure(lastFailure);
+            throw lastFailure;
+        }
+        Link made;
         try {
-            made = SshLink.connect(pc.host, pc.port, new SshLink.HostKeyCheck(pc.hostKeyAlgorithm, pc.hostKey));
-            if ("imported".equals(pc.auth)) {
-                SshLink.signInWithImported(made, pc.user, SshVault.openText(pc.importedKey), pc.importedPassphrase.isEmpty() ? null : SshVault.openText(pc.importedPassphrase));
-            } else {
-                SshLink.signInWithKey(made, pc.user, SshPcs.phoneKey(app));
-            }
-            remotePort = SshLink.ovisPort(made);
-            Connection mine = made;
-            made.addConnectionMonitor(reason -> {
-                synchronized (SshTunnel.this) {
-                    if (connection == mine) connection = null;
-                }
-            });
-            connection = made;
-            lastFailure = null;
-            return made;
-        } catch (SshLink.Failure failed) {
-            if (made != null) made.close();
-            remember(failed);
-            throw failed;
-        } catch (Exception unreadable) {
-            if (made != null) made.close();
-            SshLink.Failure failed = new SshLink.Failure("key-unreadable", SshLink.rootMessage(unreadable));
+            made = dialer.dial();
+        } catch (SshFailure failed) {
             remember(failed);
             throw failed;
         }
+        made.onEnd(() -> {
+            synchronized (SshTunnel.this) {
+                if (link == made) link = null;
+            }
+        });
+        link = made;
+        lastFailure = null;
+        return made;
     }
 
-    private void remember(SshLink.Failure failed) {
+    private void remember(SshFailure failed) {
         lastFailure = failed;
-        failedAt = System.currentTimeMillis();
-        boolean stop = failed.kind.equals("host-key-changed") || failed.kind.equals("auth") || failed.kind.equals("key-unreadable");
-        if (stop) stopped = failed;
-        FailureListener told = listener;
-        if (told != null && (stop || failed.kind.equals("no-ovis") || failed.kind.equals("not-started") || failed.kind.equals("unsupported"))) {
-            told.onFailure(pc, failed);
-        }
+        failedAt = clock.getAsLong();
+        if (failed.stops()) stopped = failed;
+        listener.onFailure(failed);
     }
 
-    /** A channel to the PC's Ovis; after a failed open the Ovis is looked up again once (it may have restarted on another port). */
-    private LocalStreamForwarder channel() throws SshLink.Failure {
-        Connection now = ready();
+    /** A channel to the PC's Ovis; after a failed open the Ovis is looked up again once. */
+    private Channel channel() throws SshFailure {
+        Link now = ready();
         try {
-            return now.createLocalStreamForwarder("127.0.0.1", remotePort);
+            return now.open();
         } catch (IOException refused) {
-            synchronized (this) {
-                if (connection == now) {
-                    try {
-                        remotePort = SshLink.ovisPort(now);
-                    } catch (SshLink.Failure gone) {
-                        remember(gone);
-                        throw gone;
-                    }
-                }
-            }
             try {
-                return ready().createLocalStreamForwarder("127.0.0.1", remotePort);
+                now.relocate();
+                return now.open();
+            } catch (SshFailure gone) {
+                synchronized (this) {
+                    remember(gone);
+                }
+                throw gone;
             } catch (IOException again) {
-                drop();
-                throw new SshLink.Failure("unreachable", SshLink.rootMessage(again));
+                synchronized (this) {
+                    if (link == now) link = null;
+                }
+                now.close();
+                SshFailure failed = new SshFailure("unreachable", SshFailure.rootMessage(again));
+                synchronized (this) {
+                    remember(failed);
+                }
+                throw failed;
             }
         }
     }
@@ -279,30 +238,34 @@ final class SshTunnel {
             InputStream fromPage = client.getInputStream();
             OutputStream toPage = client.getOutputStream();
             byte[] head = readHead(fromPage);
-            if (head == null || !carriesGate(head)) {
+            if (head == null || !carriesGate(head, gate)) {
                 toPage.write("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".getBytes(StandardCharsets.US_ASCII));
                 toPage.flush();
                 client.close();
                 return;
             }
-            LocalStreamForwarder stream;
+            Channel stream;
             try {
                 stream = channel();
-            } catch (SshLink.Failure failed) {
-                String reason = ("SSH " + failed.kind).replaceAll("[^A-Za-z0-9 -]", "");
-                byte[] body = failed.getMessage() == null ? new byte[0] : failed.getMessage().getBytes(StandardCharsets.UTF_8);
-                toPage.write(("HTTP/1.1 503 " + reason + "\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: " + body.length + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+            } catch (SshFailure failed) {
+                byte[] body = (failed.kind + ": " + failed.getMessage()).getBytes(StandardCharsets.UTF_8);
+                toPage.write((
+                    "HTTP/1.1 503 Service Unavailable\r\n" + FAILURE_HEADER + ": " + failed.kind.replaceAll("[^a-z-]", "") +
+                    "\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: " + body.length +
+                    "\r\nConnection: close\r\n\r\n"
+                ).getBytes(StandardCharsets.US_ASCII));
                 toPage.write(body);
                 toPage.flush();
                 client.close();
                 return;
             }
             client.setSoTimeout(0);
-            OutputStream toPc = stream.getOutputStream();
+            OutputStream toPc = stream.output();
             toPc.write(head);
             toPc.flush();
+            InputStream fromPc = stream.input();
             pipes.execute(() -> pump(fromPage, toPc, client, stream));
-            pump(stream.getInputStream(), toPage, client, stream);
+            pump(fromPc, toPage, client, stream);
         } catch (IOException | java.util.concurrent.RejectedExecutionException ended) {
             closeQuietly(client);
         }
@@ -312,7 +275,7 @@ final class SshTunnel {
      * The request head, up to its blank line, or null when the page closed first or sent more than
      * HEAD_LIMIT without one. Bytes after the blank line (a body) are left in the stream.
      */
-    private static byte[] readHead(InputStream in) throws IOException {
+    static byte[] readHead(InputStream in) throws IOException {
         ByteArrayOutputStream head = new ByteArrayOutputStream();
         int matched = 0;
         while (head.size() < HEAD_LIMIT) {
@@ -325,20 +288,22 @@ final class SshTunnel {
         return null;
     }
 
-    private boolean carriesGate(byte[] head) {
+    /** Whether a request head carries `gate` as the gate cookie, compared in constant time. */
+    static boolean carriesGate(byte[] head, String gate) {
+        if (gate == null || gate.isEmpty()) return false;
         String text = new String(head, StandardCharsets.ISO_8859_1);
-        byte[] gate = pc.gate.getBytes(StandardCharsets.US_ASCII);
+        byte[] expected = gate.getBytes(StandardCharsets.US_ASCII);
         for (String line : text.split("\r\n")) {
             if (!line.toLowerCase(Locale.ROOT).startsWith("cookie:")) continue;
             for (String pair : line.substring("cookie:".length()).split(";")) {
                 String[] parts = pair.trim().split("=", 2);
-                if (parts.length == 2 && parts[0].equals(GATE_COOKIE) && MessageDigest.isEqual(parts[1].getBytes(StandardCharsets.US_ASCII), gate)) return true;
+                if (parts.length == 2 && parts[0].equals(GATE_COOKIE) && MessageDigest.isEqual(parts[1].getBytes(StandardCharsets.US_ASCII), expected)) return true;
             }
         }
         return false;
     }
 
-    private static void pump(InputStream from, OutputStream to, Socket client, LocalStreamForwarder stream) {
+    private static void pump(InputStream from, OutputStream to, Socket client, Channel stream) {
         byte[] buffer = new byte[32 * 1024];
         try {
             int read;
@@ -350,11 +315,7 @@ final class SshTunnel {
             // either side went away
         } finally {
             closeQuietly(client);
-            try {
-                stream.close();
-            } catch (IOException ignored) {
-                // already closed by the other direction
-            }
+            stream.close();
         }
     }
 

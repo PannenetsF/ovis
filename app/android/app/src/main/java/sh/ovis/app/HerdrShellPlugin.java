@@ -27,6 +27,7 @@ public class HerdrShellPlugin extends Plugin {
         state.put("last", last == null ? "" : last);
         state.put("failure", PCStore.failure == null ? "" : PCStore.failure);
         state.put("kind", PCStore.failureKind == null ? "" : PCStore.failureKind);
+        state.put("command", PCStore.failureCommand == null ? "" : PCStore.failureCommand);
         call.resolve(state);
     }
 

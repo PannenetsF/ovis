@@ -86,10 +86,18 @@ final class PCStore {
     /** What kind of failure that was, when the app itself found it: "timeout" (no answer in ANSWER_SECONDS) or "not-ovis"; else null. */
     static volatile String failureKind;
 
+    /** A command to run on the PC that fixes the failure, which the error page shows to copy (an SSH PC's: SshFailure.command); else null. */
+    static volatile String failureCommand;
+
     /** Sets the failure the error page shows, and its kind (failureKind), which may be null. */
     static void fail(String reason, String kind) {
+        fail(reason, kind, null);
+    }
+
+    static void fail(String reason, String kind, String command) {
         failure = reason;
         failureKind = kind;
+        failureCommand = command;
     }
 
     /** How long the app waits for an address to answer, from Open on the connect screen to the PC's first page (MainActivity's cover), as the iOS app's cover waits. */

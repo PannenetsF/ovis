@@ -49,6 +49,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -263,6 +264,7 @@ public class MainActivity extends BridgeActivity {
                             state.put("name", last == null ? "" : PCStore.names(this).optString(last, ""));
                             state.put("failure", PCStore.failure == null ? "" : PCStore.failure);
                             state.put("kind", PCStore.failureKind == null ? "" : PCStore.failureKind);
+                            state.put("command", PCStore.failureCommand == null ? "" : PCStore.failureCommand);
                             replyProxy.postMessage(state.toString());
                         } else if ("retry".equals(asked)) {
                             retry();
@@ -385,7 +387,8 @@ public class MainActivity extends BridgeActivity {
                         if (request.isForMainFrame()) {
                             pageFailed = true;
                             String reason = response.getReasonPhrase();
-                            PCStore.fail("HTTP " + response.getStatusCode() + (reason == null || reason.isEmpty() ? "" : " " + reason), null);
+                            // an SSH PC's tunnel said why itself (OvisSshPlugin), in more words than its 503
+                            if (!sshFailure(response)) PCStore.fail("HTTP " + response.getStatusCode() + (reason == null || reason.isEmpty() ? "" : " " + reason), null);
                         }
                         super.onReceivedHttpError(view, request, response);
                     }
@@ -898,6 +901,14 @@ public class MainActivity extends BridgeActivity {
         intent.setData(null);
         boolean fromRecents = (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0;
         return fresh && !fromRecents ? link : null;
+    }
+
+    /** Whether `response` is an SSH PC tunnel's failure (SshTunnel.FAILURE_HEADER). */
+    private static boolean sshFailure(WebResourceResponse response) {
+        Map<String, String> headers = response.getResponseHeaders();
+        if (headers == null) return false;
+        for (String name : headers.keySet()) if (SshTunnel.FAILURE_HEADER.equalsIgnoreCase(name)) return true;
+        return false;
     }
 
     /** Opens the current PC again from its first page. */
