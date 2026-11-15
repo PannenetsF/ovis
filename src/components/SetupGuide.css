@@ -883,3 +883,314 @@
 
 /* Sign in to an installed Claude Code or Codex, under the tiles */
 .setup-sign-in .setup-link { margin-inline-start: var(--space-1); }
+
+/* the phone panel's variants (a preview): method buttons or tabs, store badges, one QR area */
+.setup-methods {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.setup-method {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  color: var(--text);
+  text-align: start;
+  cursor: pointer;
+}
+
+.setup-method:hover {
+  border-color: var(--border-strong);
+}
+
+.setup-method[aria-pressed="true"],
+.setup-store[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 var(--hairline) var(--accent);
+}
+
+.setup-method-icon {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+.setup-method-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.setup-method-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.setup-method-when {
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+}
+
+.setup-badge {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+
+.setup-stores-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.setup-stores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.setup-store {
+  display: inline-flex;
+  padding: 2px;
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-md);
+  background: none;
+  cursor: pointer;
+}
+
+.setup-store img,
+.setup-path-store img {
+  display: block;
+  width: auto;
+  height: 40px;
+}
+
+/* Google's badge artwork carries its own clear space: drawn taller, its badge matches the App Store's */
+.setup-store img[src*="google-play"],
+.setup-path-store img[src*="google-play"] {
+  height: 58px;
+  margin-block: -9px;
+}
+
+.setup-method-area {
+  min-height: 200px;
+  padding-top: var(--space-2);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.setup-qr-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-5);
+}
+
+.setup-qr-panel-text {
+  display: flex;
+  flex: 1 1 12em;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
+}
+
+.setup-qr-panel-text strong {
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+  letter-spacing: 0.1em;
+}
+
+.setup-qr-scan {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--fs-md);
+}
+
+.setup-qr-address {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.setup-qr-address code {
+  overflow-wrap: anywhere;
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+
+.setup-method-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* variant B: a numbered path */
+.setup-path {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-path > li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.setup-path-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.setup-path-num {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+}
+
+.setup-path-stores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.setup-path-store {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  border-radius: var(--radius-md);
+}
+
+.setup-path-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.setup-path-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: calc(-1 * var(--hairline));
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-dim);
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+
+.setup-path-tab svg {
+  width: 16px;
+  height: 16px;
+}
+
+.setup-path-tab[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--text-strong);
+}
+
+/* the alerts half: a sample alert and where alerts go */
+.setup-alert-sample {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: 26em;
+  padding: var(--space-3) var(--space-4);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-card);
+}
+
+.setup-alert-sample-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.setup-alert-sample-title {
+  color: var(--text-strong);
+  font-weight: var(--fw-semibold);
+}
+
+.setup-alert-sample-time {
+  align-self: flex-start;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+.setup-alert-where {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+
+.setup-alert-where li {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.setup-alert-where .setup-label {
+  flex: 0 0 7em;
+}
+
+@media (max-width: 640px) {
+  .setup-methods {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* the three tabs stay one row, as three equal columns: the icon, the name, the pill under it */
+  .setup-path-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .setup-path-tab {
+    flex-direction: column;
+    justify-content: flex-start;
+    padding-inline: var(--space-1);
+    text-align: center;
+  }
+}
