@@ -429,6 +429,8 @@ describe("alertsHere: what the step, Done and Setup: N left say of this device's
     ["the desktop app, notifications allowed", { desktop: true, pushSupported: false, pushOn: false, push: record({ checked: false, delivered: null }) }, "on"],
     ["the desktop app, notifications refused", { desktop: true, notifications: "denied", pushSupported: false, pushOn: false }, "off"],
     ["no Notification API (plain http)", { notifications: "unsupported", pushSupported: false, pushOn: false }, "unavailable"],
+    ["no Notification API (plain http), the switch off", { alertsOn: false, notifications: "unsupported", pushSupported: false, pushOn: false }, "unavailable"],
+    ["a working subscription with no delivery recorded yet (an automatic re-subscription): off until one press or one alert", { push: record({ delivered: false }) }, "off"],
     ["notifications but no push (not the desktop app)", { pushSupported: false, pushOn: false, push: record({ delivered: null }) }, "off"],
     ["an older server or the open LAN: no record, the confirmation push got through", { push: record({ delivered: null }), confirmed: true }, "on"],
     ["an older server or the open LAN: no record, the confirmation push failed (and after a reload)", { push: record({ delivered: null }), confirmed: false }, "off"],

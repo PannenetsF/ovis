@@ -99,12 +99,15 @@ try {
         assert.ok(hintBox.y >= switchBox.y + switchBox.height, `the first hint sits under the switch ${at}: ${JSON.stringify({ switchBox, hintBox })}`);
         assert.equal(await page.evaluate(() => document.activeElement?.closest(".first-hint") ?? null), null, `the hint takes no keyboard ${at}`);
         await shot("1-hint-chat");
-        await hint.getByRole("button", { name: "Next", exact: true }).click();
+        // Next from the keyboard: the next hint's Next takes the focus, so Enter goes on advancing
+        await hint.getByRole("button", { name: "Next", exact: true }).focus();
+        await page.keyboard.press("Enter");
         const second = page.getByRole("dialog", { name: "Agents that wait for you come first", exact: true });
         await second.waitFor();
         await settled(page);
         const agentsBox = (await page.locator(".agents-sidebar > .agent-section-toggle").boundingBox())!;
         assert.ok((await second.boundingBox())!.x >= agentsBox.x + agentsBox.width, `the second hint sits beside the Agents section ${at}`);
+        assert.equal(await page.evaluate(() => document.activeElement?.closest(".first-hint")?.querySelector("h2")?.textContent ?? null), "Agents that wait for you come first", `Next from the keyboard keeps the focus in the hints ${at}`);
         await shot("2-hint-agents");
         // Escape from inside the hint closes them for good; a reload brings none
         await second.getByRole("button", { name: "Next", exact: true }).focus();

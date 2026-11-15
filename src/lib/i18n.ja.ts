@@ -242,6 +242,7 @@ const BASE: Record<string, string> = {
   "Check now": "今すぐ確認",
   "Check again": "再確認",
   "Checking…": "確認しています…",
+  "Could not check alerts with this PC.": "このPCで通知の状態を確認できませんでした。",
   "relay": "リレー",
   "direct": "直接",
   "local": "PC内部·トンネル",

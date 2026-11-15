@@ -75,7 +75,6 @@ export const GUIDE_KO: Record<string, string> = {
   "Test alert": "테스트 알림",
   "This is how an alert from Ovis looks on this computer.": "이 컴퓨터에서 Ovis 알림은 이렇게 보입니다.",
   "Test alert sent. It should be on your screen now.": "테스트 알림을 보냈습니다. 지금 화면에 떠 있어야 합니다.",
-  "Could not check alerts with this PC.": "이 PC에서 알림 상태를 확인하지 못했습니다.",
   "{name} is paired.": "{name} 페어링됨.",
   "Not yet": "아직",
   "Later": "나중에",

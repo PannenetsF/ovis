@@ -75,7 +75,6 @@ export const GUIDE_JA: Record<string, string> = {
   "Test alert": "テスト通知",
   "This is how an alert from Ovis looks on this computer.": "このコンピューターでは Ovis の通知はこのように表示されます。",
   "Test alert sent. It should be on your screen now.": "テスト通知を送りました。画面に表示されているはずです。",
-  "Could not check alerts with this PC.": "このPCで通知の状態を確認できませんでした。",
   "{name} is paired.": "{name} をペアリングしました。",
   "Not yet": "まだ",
   "Later": "あとで",

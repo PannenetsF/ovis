@@ -240,6 +240,7 @@ const BASE: Record<string, string> = {
   "Check now": "지금 확인",
   "Check again": "다시 확인",
   "Checking…": "확인 중…",
+  "Could not check alerts with this PC.": "이 PC에서 알림 상태를 확인하지 못했습니다.",
   "relay": "릴레이",
   "direct": "직접",
   "local": "PC 내부·터널",

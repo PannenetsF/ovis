@@ -363,9 +363,10 @@ export interface AlertsFacts {
  * as Settings → Alerts keeps it on with its warning. Nothing is said before a look reached the PC.
  */
 export function alertsHere({ alertsOn, notifications, desktop, pushSupported, pushOn, push, confirmed }: AlertsFacts): AlertsHere {
+  // no Notification API (plain http): nothing to turn on here, whatever the switch says
+  if (!desktop && notifications === "unsupported") return "unavailable";
   if (!alertsOn) return "off";
   if (desktop) return notifications === "granted" ? "on" : "off";
-  if (notifications === "unsupported") return "unavailable";
   if (notifications !== "granted" || !pushSupported) return "off";
   if (!push.checked) return "checking";
   if (push.problem !== null) return "off";

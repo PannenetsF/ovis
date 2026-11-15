@@ -55,6 +55,7 @@ import { desktopUpdateBridge } from "../lib/desktopUpdate.ts";
 import { alertsFailed, alertsHere, alertsSurfaces, type AlertsHere as AlertsAnswer } from "../lib/setupGuideFlow.ts";
 import { pushSupported, registeredPushEndpoint } from "../lib/push.ts";
 import { confirmation } from "../lib/pushConfirm.ts";
+import { AlertsChecking, ALERTS_CHECK_GIVE_UP_MS, useLongerThan } from "./AlertsChecking.tsx";
 import { chosenTheme } from "../lib/customThemes.ts";
 import { TelemetryNotice } from "./TelemetryControls.tsx";
 import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
@@ -763,14 +764,7 @@ function AlertsHere({ onEnable, notifications: state, alerts, uncheckable, failu
               <button type="button" className="btn" disabled={busy !== null} onClick={() => void enable()}><Bell aria-hidden="true" />{busy === "enable" ? t("Turning alerts on…") : t("Try again")}</button>
             </div>
           </>
-        ) : shown === "checking" ? (uncheckable ? (
-          <>
-            <p className="setup-note"><Info aria-hidden="true" />{t("Could not check alerts with this PC.")}</p>
-            <div className="setup-actions">
-              <button type="button" className="btn" onClick={() => void refreshPushHealth(true)}><Bell aria-hidden="true" />{t("Try again")}</button>
-            </div>
-          </>
-        ) : <p className="setup-note"><Info aria-hidden="true" />{t("Checking…")}</p>)
+        ) : shown === "checking" ? <AlertsChecking uncheckable={uncheckable} onRetry={() => void refreshPushHealth(true)} />
         : !on && (
           <div className="setup-actions">
             <button type="button" className="btn" disabled={busy !== null} onClick={() => void enable()}><Bell aria-hidden="true" />{busy === "enable" ? t("Turning alerts on…") : t("Turn on alerts")}</button>
@@ -787,21 +781,6 @@ function AlertsHere({ onEnable, notifications: state, alerts, uncheckable, failu
       <p className="setup-muted" role="status">{failure !== null ? failure : line === "sent" ? t("Test alert sent. It should be on your screen now.") : line === "failed" ? t("Could not send the test notification. Try again.") : null}</p>
     </div>
   );
-}
-
-/** How long the step and Done say Checking… for alerts before they say it could not be checked, with Try again. */
-const ALERTS_CHECK_GIVE_UP_MS = 15_000;
-
-/** Whether `on` has held for `ms` without a break. */
-function useLongerThan(on: boolean, ms: number): boolean {
-  const [past, setPast] = useState(false);
-  useEffect(() => {
-    setPast(false);
-    if (!on) return;
-    const timer = window.setTimeout(() => setPast(true), ms);
-    return () => window.clearTimeout(timer);
-  }, [on, ms]);
-  return on && past;
 }
 
 /** How many of a side's own themes show before Show all themes: two rows of three. */

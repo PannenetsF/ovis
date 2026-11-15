@@ -244,6 +244,7 @@ const BASE: Record<string, string> = {
   "Check now": "立即检查",
   "Check again": "重新检查",
   "Checking…": "正在检查…",
+  "Could not check alerts with this PC.": "无法在这台电脑上检查提醒状态。",
   "relay": "中继",
   "direct": "直连",
   "local": "PC 内部·隧道",

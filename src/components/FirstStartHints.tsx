@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { browserStorage as storage, finishHints, FIRST_HINTS_KEY, hintsPending } from "../lib/firstHints.ts";
@@ -52,6 +52,8 @@ export function FirstStartHints({ active }: { active: boolean }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [place, setPlace] = useState<Place | null>(null);
   const [card, setCard] = useState<HTMLElement | null>(null);
+  // Next pressed from the keyboard: the next hint's Next takes the focus, as the old card goes with its anchor
+  const refocus = useRef(false);
   const hints = [
     { title: t("Chat and Terminal show the same agent"), text: t("Terminal is the agent's real screen. Chat shows the same work as a conversation.") },
     { title: t("Agents that wait for you come first"), text: t("A waiting agent is marked here, whichever workspace it is in.") },
@@ -124,6 +126,7 @@ export function FirstStartHints({ active }: { active: boolean }) {
       const box = anchor.getBoundingClientRect();
       if (!anchor.isConnected || box.width === 0 || box.height === 0) { setAnchor(null); setPlace(null); return; }
       setPlace(placeBy(anchor, card.offsetWidth, card.offsetHeight));
+      if (refocus.current) { refocus.current = false; card.querySelector<HTMLButtonElement>(".btn-primary")?.focus(); }
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -136,7 +139,11 @@ export function FirstStartHints({ active }: { active: boolean }) {
   if (!shown || anchor === null) return null;
   const hint = hints[step]!;
   const last = step === hints.length - 1;
-  const next = (): void => { if (last) finish(); else { setAnchor(null); setPlace(null); setStep(step + 1); } };
+  const next = (): void => {
+    if (last) { finish(); return; }
+    refocus.current = card?.contains(document.activeElement) === true;
+    setAnchor(null); setPlace(null); setStep(step + 1);
+  };
   // at the end of the page, so its Next and close come after the pane in the Tab order
   return createPortal(
     <section ref={setCard} className={`first-hint is-${place?.side ?? "below"}`} role="dialog" aria-modal="false" aria-labelledby="first-hint-title"
