@@ -140,6 +140,7 @@ import { SplitDropPreview } from "./components/SplitDropPreview.tsx";
 import { CrashProbe, RegionCrash } from "./components/AppCrash.tsx";
 import { RenderBoundary } from "./components/RenderBoundary.tsx";
 import { lensOwner, storedView, usePaneLens, usePaneLensState, usePaneViewPicks } from "./lib/usePaneLens.ts";
+import { actionUse, tally, usageCounters, useCountedInboxWays, useShownCount } from "./lib/usageCounters.ts";
 import { useSplitLayout, useSplitRecheck, useSplitState } from "./lib/useSplitView.ts";
 import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, useSelectedLayout, useSelectedMachine, useSelectedPane, useSelectionMark, useSelectionState, useSelectPane, useSelectTarget } from "./lib/useSelection.ts";
 import { useAddressBar } from "./lib/useAddressBar.ts";
@@ -307,7 +308,7 @@ export function App() {
   const moreMenu = useMoreMenu();
   const { more, setMore, closeMore, group: moreGroup, openGroup: openMoreGroup, closeGroup: closeMoreGroup } = moreMenu;
   // the pane canvas's actions, for the phone's tab menu (TabStrip)
-  const paneActionsRef = useRef<((target: HerdrPane) => RowMenuItem[]) | null>(null);
+  const paneActionsRef = useRef<((target: HerdrPane, options?: { counted?: boolean }) => RowMenuItem[]) | null>(null);
   // a locked pinned agent's menu has no Close (PaneCanvas): neither has the Close pane shortcut or palette row
   const paneLocked = usePaneLocked(selectedMachineId);
   const { filesOpen, setFilesOpen, filesDocked, filesCovered, revealFiles, viewing, openFile, closeFile, hideFile, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, openDiffFile, reportFileKind, toggleFilePresentation, viewFile } = useFilePanels({ settings, filePanelAvailable, selectedPaneId, selectedMachineId });
@@ -387,8 +388,8 @@ export function App() {
   // the list): one history entry each way, so Back undoes it. On a phone More's item runs while its sheet's own entry
   // is still current: the push takes that entry over (lib/sheetHistory.ts), and no entry is left between. The shell's
   // own part (the drawer put away, the list shown for a mode with no pane) is lib/useInbox.ts useInboxShell.
-  const { leave: leaveMode } = inboxMode;
-  const { enterInbox, returnTo } = useInboxShell({ inMode, shown: inbox.shown, show: inbox.show,
+  const { leave: leaveModeShell } = inboxMode;
+  const { enterInbox: enterInboxShell, returnTo } = useInboxShell({ inMode, shown: inbox.shown, show: inbox.show,
     // the way in opens the thread of the pane the app is on as its row would (InboxList's onOpen below), once the
     // list has covered the panes
     open: () => {
@@ -412,6 +413,9 @@ export function App() {
     focusInput: () => paneControls.current?.focusInput() });
   // offered where the mode is, and not over the setup guide, which has the classic shell to itself
   const modeOffered = !guideShown;
+  // going into the agent inbox and out of it, counted wherever a person asked
+  const { enter: enterInbox, leave: leaveMode } = useCountedInboxWays(enterInboxShell, leaveModeShell);
+  useShownCount("inbox", modeOffered, LOCAL_MACHINE);
 
 
   const unlock = useCallback(() => {
@@ -558,8 +562,11 @@ export function App() {
   // and one for how long each agent has been in its state: stamped here, read by the lists (lib/useAgentStateSince.ts)
   useAgentStateStamping(machines, activity);
 
-  const { pickView, setView } = usePaneViewPicks({ setViewPicks, setNotificationViewTarget, setTerminalPeek, setLens, setAutoSelected, selectedPaneId, selectedMachineId });
+  const agentOf = (machineId: string, paneId: string) => machines.find((machine) => machine.id === machineId)?.snapshot?.panes.find((pane) => pane.pane_id === paneId)?.agent;
+  const { pickView, setView } = usePaneViewPicks({ setViewPicks, setNotificationViewTarget, setTerminalPeek, setLens, setAutoSelected, selectedPaneId, selectedMachineId, view, agentOf });
   const { unsentFor, openUnsent, closeUnsent, recover } = useUnsentRecovery({ selectedMachineId, selectedPaneId, setView, pickView });
+  // the Chat/Terminal switch in the header (or the thread's top), and each half's own in a split
+  useShownCount("view_switch_header", selectedPane !== null && !inbox.shown, selectedMachineId);
   // on a phone a peek is a step of its own: Back takes the chat back, as it closes a sheet. It stays
   // up under a sheet or Settings opened over it: their close, or a Back, comes back to the peek
   usePhoneSheetBack(() => endPeek(), terminalPeek !== null, true);
@@ -658,8 +665,17 @@ export function App() {
         if (next) selectPane(next);
       },
       setView,
+      counted: (action, source) => {
+        // what would do nothing here is no use of it (a shortcut or palette row with no pane to split, close or add a tab
+        // beside); split, close pane and new tab act on the selected pane: counted for this PC's own alone
+        const name = actionUse(action, source, { machineId: selectedMachineId, can: {
+          split: actions.splitPane !== null, close_pane: actions.closePane !== null, new_tab: !inbox.shown && !inMode && newTabTarget() !== null,
+          sidebar: !inMode, files: actions.openFiles !== null,
+        } });
+        if (name) tally(() => usageCounters.count(name));
+      },
       // a peek shows the terminal over the chat: the shortcut takes the chat back, the lens stays Chat
-      toggleView: () => { if (terminalPeek !== null) endPeek(); else setView(view === "chat" ? "terminal" : "chat"); setDrawerOpen(false); },
+      toggleView: (source) => { if (terminalPeek !== null) endPeek(); else setView(view === "chat" ? "terminal" : "chat", source); setDrawerOpen(false); },
       focusInput: () => { if (!inbox.shown) paneControls.current?.focusInput(); },
       scrollPage: (direction) => paneControls.current?.scrollPage(direction),
       openNewSession: () => {
@@ -757,7 +773,7 @@ export function App() {
         if (selectedPaneId === null) return;
         // a peek already shows the pane's terminal: find searches it there, and the peek (its return,
         // and the lens and address under it) stays
-        if (terminalPeek?.paneId !== selectedPaneId || terminalPeek.machineId !== selectedMachineId) setView("terminal");
+        if (terminalPeek?.paneId !== selectedPaneId || terminalPeek.machineId !== selectedMachineId) setView("terminal", null);
         setDrawerOpen(false);
         setFindRequest((request) => ({ paneId: selectedPaneId, serial: request.serial + 1 }));
       },
@@ -811,7 +827,8 @@ export function App() {
       // the canvas no longer offers Close for by the press closes nothing
       closePane: !closeOffered ? null : () => {
         const target = snapshotRef.current?.panes.find((pane) => pane.pane_id === selectionRef.current.paneId);
-        if (target) paneActionsRef.current?.(target).find((item) => item.id === "close" && !item.disabled)?.run();
+        // counted by its shortcut or palette row, not as the pane menu it runs
+        if (target) paneActionsRef.current?.(target, { counted: false }).find((item) => item.id === "close" && !item.disabled)?.run();
       },
       closeTab: !tabCloseOffered ? null : () => requestCloseTab(selectedMachineId, selectedPaneId!),
     }),
@@ -924,7 +941,7 @@ export function App() {
     ...(foldFind && more ? [{ id: "find-group", label: t("Find…"), icon: TextSearch, run: () => openMoreGroup("find", more.anchor) }] : findInTerminal),
     // from 769px Files has its own button beside the lens switch; a phone keeps it here
     // and so does an inbox mode thread at any width, whose shell has no Files button
-    ...(selectedPane && (!wideScreen || inMode) ? [{ id: "files", label: t("Browse files"), icon: FolderOpen, run: () => setFilesOpen(true) }] : []),
+    ...(selectedPane && (!wideScreen || inMode) ? [{ id: "files", label: t("Browse files"), icon: FolderOpen, run: () => { actions.counted?.("files", "menu"); setFilesOpen(true); } }] : []),
     // the address says where the app is (lib/deepLink.ts); a phone has no address bar to copy it from
     { id: "copy-link", label: t("Copy link"), icon: Link, run: () => void copyText(window.location.href).then((ok) => { if (ok) setHeaderNote("copied"); }) },
     { id: "alerts", label: t("Alerts"), hint: bell.state, checked: bell.on, title: bell.title, icon: Bell, run: () => void bell.run() },
@@ -933,7 +950,7 @@ export function App() {
       .map((item, index) => index === 0 ? { ...item, divider: true } : item),
     ...(foldPane && more ? [{ id: "pane-group", label: t("Pane and tab…"), icon: PanelsTopLeft, divider: true, run: () => openMoreGroup("pane", more.anchor) }] : []),
     // the way into the agent inbox (lib/inboxMode.ts), More's last group at every width
-    ...(modeOffered ? [{ id: "enter-inbox", label: t("Open agent inbox"), icon: Inbox, divider: true, run: enterInbox }] : []),
+    ...(modeOffered ? [{ id: "enter-inbox", label: t("Open agent inbox"), icon: Inbox, divider: true, run: () => { actions.counted?.("inbox", "menu"); enterInbox(); } }] : []),
   ];
   // The inbox mode's More: what still means something in a shell with no drawer, tab row or status bar. On the list
   // only what is the app's own (the list already shows who waits first); in a thread also what is about the thread,
@@ -960,7 +977,7 @@ export function App() {
   ];
   const modeEndItems: RowMenuItem[] = [
     ...fromMore("alerts").map((item) => ({ ...item, divider: false })),
-    { id: "settings", label: t("Settings"), icon: SettingsGlyph, divider: true, run: actions.openSettings },
+    { id: "settings", label: t("Settings"), icon: SettingsGlyph, divider: true, run: () => { actions.counted?.("settings", "menu"); actions.openSettings(); } },
   ];
   const modeAppItems: RowMenuItem[] = [...modeLeadItems, ...modeEndItems];
   // a phone's thread has the one More: the way out and the palette, then the thread's items, then the rest of the app's
@@ -997,6 +1014,7 @@ export function App() {
   // shows its list
   const threadDrawn = inMode && !inbox.shown;
   const paneSplit = splitOn && !threadDrawn;
+  useShownCount("view_switch_pane", paneSplit, selectedMachineId);
   const listScreen = inMode && inbox.shown && !inboxWide;
   // a phone thread that shows its terminal, where the classic shell would draw the pane's own tab row over it: the
   // thread keeps that row's room free, so the terminal's box, and its pty's size, are the ones classic gives it
@@ -1084,7 +1102,7 @@ export function App() {
   const filesBeside = filesOpen && filesDocked && selectedPane !== null && !filesCovered;
   const toggleFiles = (): void => {
     if (filesBeside) setFilesOpen(false);
-    else revealFiles();
+    else { actions.counted?.("files", "button"); revealFiles(); }
   };
   const filesDialog = (docked: boolean): ReactNode => selectedPane && (
     <FilesDialog docked={docked} covered={docked && filesCovered} panelStart={docked ? <FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} /> : undefined}
@@ -1106,7 +1124,7 @@ export function App() {
             .header-side is the sidebar's own top row from 769px (styles.css); below that its
             buttons sit in the bar */}
         <div className="header-side">
-          {wideScreen && !sidebarCollapsed && !inMode && <SidebarBrand dark={resolvedTheme === "dark"} onOpenInbox={modeOffered ? enterInbox : null} />}
+          {wideScreen && !sidebarCollapsed && !inMode && <SidebarBrand dark={resolvedTheme === "dark"} onOpenInbox={modeOffered ? () => { actions.counted?.("inbox", "button"); enterInbox(); } : null} />}
           {inboxBack ? <button type="button" id="inbox-back" className="icon-button inbox-back" aria-label={t("Back")} title={t("Back")} onClick={inbox.back}><ChevronLeft /></button> : <button
             type="button"
             id="drawer-toggle"
@@ -1121,7 +1139,7 @@ export function App() {
           </button>}
           {/* New workspace's + beside the logo, from 769px in one-line rows: it starts one on the selected PC. A phone's
               drawer has none here: each PC's own row carries its +, which says which PC (MachineSidebar.tsx) */}
-          {!inMode && wideScreen && !sidebarCollapsed && settings.sidebarRows !== "two" && <button type="button" className="icon-button new-workspace-button" disabled={auth?.role === "watch" || selectedMachine?.state !== "connected"} aria-label={t("New workspace")} title={auth?.role === "watch" ? `${t("New workspace")} · ${t("View only")}` : t("New workspace")} onClick={() => actions.openNewSession()}>
+          {!inMode && wideScreen && !sidebarCollapsed && settings.sidebarRows !== "two" && <button type="button" className="icon-button new-workspace-button" disabled={auth?.role === "watch" || selectedMachine?.state !== "connected"} aria-label={t("New workspace")} title={auth?.role === "watch" ? `${t("New workspace")} · ${t("View only")}` : t("New workspace")} onClick={() => { actions.counted?.("new_workspace", "button"); actions.openNewSession(); }}>
             <Plus aria-hidden="true" />
           </button>}
           {/* an inbox mode thread's header is Back, its title, the monitor button and More */}
@@ -1134,7 +1152,7 @@ export function App() {
             aria-label={t(sidebarCollapsed ? "Show workspace list" : "Hide workspace list")}
             aria-pressed={!sidebarCollapsed}
             title={shortcutTitle(t("Toggle sidebar"), "toggle-sidebar")}
-            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+            onClick={() => { actions.counted?.("sidebar", "button"); setSidebarCollapsed((collapsed) => !collapsed); }}
             ref={peekToggleRef}
             {...peekToggleHandlers}
           >
@@ -1153,8 +1171,8 @@ export function App() {
                 onRenameHandled={clearRenameRequest}
                 closeRequest={closeTabRequest?.machineId === selectedMachineId && closeTabRequest.paneId === selectedPane.pane_id ? closeTabRequest : null}
                 onCloseHandled={clearCloseTabRequest}
-                onNewTab={() => actions.openNewTab()}
-                onNewTerminal={() => actions.openTerminalTab()}
+                onNewTab={() => { actions.counted?.("new_tab", "button"); actions.openNewTab(); }}
+                onNewTerminal={() => { actions.counted?.("new_tab", "button"); return actions.openTerminalTab(); }}
                 onMoveToWorkspace={(tabId, workspaceId) => actions.moveTabToWorkspace({ machineId: selectedMachineId, tabId, workspaceId })}
                 paneActions={(paneId) => {
                   const target = snapshot.panes.find((item) => item.pane_id === paneId);
@@ -1222,18 +1240,18 @@ export function App() {
             a thumb that slides to it (Apple's segmented control). Mod+Shift+J switches too */}
         {selectedPane && (isSheetWidth || inMode) && !inbox.shown && (
           <LensToggle view={view} peek={terminalPeek !== null} terminalAttach={terminalAttach} thread={inMode}
-            title={(label) => shortcutTitle(label, "toggle-view")} onToggle={actions.toggleView} />
+            title={(label) => shortcutTitle(label, "toggle-view")} onToggle={() => actions.toggleView("header")} />
         )}
         {selectedPane && !isSheetWidth && !inMode && (
           <div className="view-switch" data-view={view} role="group" aria-label={`${t("Chat")} / ${t("Terminal")}`}>
             <button type="button" className="lens-option is-chat" aria-pressed={view === "chat"} aria-label={t("Chat")} title={shortcutTitle(t("Chat transcript"), "toggle-view")}
-              onClick={() => { setView("chat"); setDrawerOpen(false); }}>
+              onClick={() => { setView("chat", "header"); setDrawerOpen(false); }}>
               <MessageCircle aria-hidden="true" />
               <span className="lens-label">{t("Chat")}</span>
             </button>
             <button type="button" className="lens-option is-terminal" aria-pressed={view === "terminal"} aria-label={terminalAttach ? t("Terminal") : `${t("Terminal")} · ${t("soon")}`}
               title={!terminalAttach ? t("Live terminal: coming to Windows PCs once herdr can attach there") : shortcutTitle(t("Live terminal"), "toggle-view")}
-              onClick={() => { setView("terminal"); setDrawerOpen(false); }}>
+              onClick={() => { setView("terminal", "header"); setDrawerOpen(false); }}>
               <SquareTerminal aria-hidden="true" />
               <span className="lens-label">{t("Terminal")}</span>
               {!terminalAttach && <span className="pill pill-soon">{t("soon")}</span>}
@@ -1317,7 +1335,7 @@ export function App() {
           <RenderBoundary resetKey={null} fallback={(retry) => <RegionCrash message={t("The sidebar can't be shown.")} retry={retry} />}>
             <CrashProbe region="sidebar" />
             <ReorderContext.Provider value={reorderCoordinator}><MachineSidebar machines={sidebarMachines} allMachines={machines} watching={auth?.role === "watch"} appLayout={appLayoutOn} drawerOpen={drawerOpen} filterRequest={sidebarFilterRequest} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} activity={activity} actions={actions} onSelect={selectTarget} onUsageLogin={(paneId) => { selectTarget("local", paneId, "terminal"); void load(); }} onSetup={(machine, update = false) => { setUpdateRemote(update); setMachineDialog(machine); }} onNew={openNewOn}
-              footerStart={<>{setupRow}{modeOffered && <InboxFootEntry onOpen={enterInbox} />}</>} /></ReorderContext.Provider>
+              footerStart={<>{setupRow}{modeOffered && <InboxFootEntry onOpen={() => { actions.counted?.("inbox", "button"); enterInbox(); }} />}</>} /></ReorderContext.Provider>
           </RenderBoundary>
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>}
@@ -1369,7 +1387,7 @@ export function App() {
             thread={!inbox.shown && selectedPane !== null && note === null ? { machines, activity, machineId: selectedMachineId, pane: selectedPane, connection: headerConnection, watching: auth?.role === "watch", severalPcs: sidebarMachines.length > 1 } : null}
             controls={!inbox.shown && selectedPane !== null ? <>
               <LensToggle view={view} peek={terminalPeek !== null} terminalAttach={terminalAttach} thread round
-                title={(label) => shortcutTitle(label, "toggle-view")} onToggle={actions.toggleView} />
+                title={(label) => shortcutTitle(label, "toggle-view")} onToggle={() => actions.toggleView("header")} />
               {moreButton(true)}
             </> : moreButton(true)} />}
           {(inbox.shown && inbox.cold ? [] : shownSlots).map((slot) => {
@@ -1401,7 +1419,7 @@ export function App() {
             const toggleSlotView = (): void => {
               if (slotPeek !== null) { endPeek(slotPeek); return; }
               const next = slotView === "chat" ? "terminal" : "chat";
-              if (active) setView(next); else if (pane) pickView(machineId, pane.pane_id, next);
+              if (active) setView(next, "pane"); else if (pane) pickView(machineId, pane.pane_id, next, "pane");
             };
             // a half's own lens and close sit at the end of its tab strip. The row's free end is the
             // half's grip: its pane, dropped on a half of the pane area, opens there too (dockSide)
@@ -1457,8 +1475,8 @@ export function App() {
                     onRenameHandled={clearRenameRequest}
                     closeRequest={active && closeTabRequest?.machineId === machineId && closeTabRequest.paneId === pane.pane_id ? closeTabRequest : null}
                     onCloseHandled={clearCloseTabRequest}
-                    onNewTab={() => actions.openNewTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id })}
-                    onNewTerminal={() => actions.openTerminalTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id })}
+                    onNewTab={() => { tally(() => usageCounters.paneUse("new_tab_by_button", machineId)); actions.openNewTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }); }}
+                    onNewTerminal={() => { tally(() => usageCounters.paneUse("new_tab_by_button", machineId)); return actions.openTerminalTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }); }}
                     onMoveToWorkspace={(tabId, workspaceId) => actions.moveTabToWorkspace({ machineId, tabId, workspaceId })}
                     paneActions={active ? (paneId) => {
                       const target = snapshot?.panes.find((item) => item.pane_id === paneId);
@@ -1478,8 +1496,8 @@ export function App() {
                     onOpenInHalf={wideScreen && !threadDrawn ? (id, side) => dockSide({ machineId, paneId: id }, side) : undefined}
                     onRecoverUnsent={(target) => openUnsent({ machineId, pane: target })}
                     onSearchConversation={(target) => searchable(machineId, target, lensOf(target)) && !(slotPeek !== null && target.pane_id === pane?.pane_id) ? () => requestSearch(slot, machineId, target.pane_id) : null}
-                    onNewTab={workspace ? () => actions.openNewTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }) : undefined}
-                    onNewTerminal={workspace ? () => actions.openTerminalTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }) : undefined}
+                    onNewTab={workspace ? () => { tally(() => usageCounters.paneUse("new_tab_by_button", machineId)); actions.openNewTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }); } : undefined}
+                    onNewTerminal={workspace ? () => { tally(() => usageCounters.paneUse("new_tab_by_button", machineId)); return actions.openTerminalTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }); } : undefined}
                     onMoveToWorkspace={(tabId, workspaceId) => actions.moveTabToWorkspace({ machineId, tabId, workspaceId })}
                     tabsInHeader={tabsInHeader || threadDrawn} solo={threadDrawn}
                     renameRequest={active && pane && renameRequest?.machineId === machineId && renameRequest.paneId === pane.pane_id ? renameRequest : null}
@@ -1511,7 +1529,7 @@ export function App() {
                         machineName={machine?.name ?? machineId}
                         view={item ? lensOf(item) : slotView}
                         // the composer's way to the terminal: the selected pane's lens, or the pane's own remembered one
-                        onOpenTerminal={item ? () => { if (active && item.pane_id === selectedPaneId) setView("terminal"); else pickView(machineId, item.pane_id, "terminal"); } : undefined}
+                        onOpenTerminal={item ? () => { if (active && item.pane_id === selectedPaneId) setView("terminal", "pane"); else pickView(machineId, item.pane_id, "terminal", "pane"); } : undefined}
                         // a terminal command's peek, for the active half's selected pane alone (lib/terminalPeek.ts)
                         peek={active && item?.pane_id === selectedPaneId ? peekFor(terminalPeek, slot, machineId, item.pane_id) : null}
                         onPeek={active && item && item.pane_id === selectedPaneId && attach ? (request: PeekRequest) => setTerminalPeek({ ...request, slot, machineId, paneId: item.pane_id }) : undefined}
@@ -1586,7 +1604,7 @@ export function App() {
           closeNewSession();
           if (agentStarted) actions.agentStarted(newSessionMachineId, paneId);
           // the first message waits in the chat's box: the pane opens on it, whatever lens the page would pick
-          if (messageWaits) pickView(newSessionMachineId, paneId, "chat");
+          if (messageWaits) pickView(newSessionMachineId, paneId, "chat", null);
           selectTarget(newSessionMachineId, paneId);
           void load();
         }}
