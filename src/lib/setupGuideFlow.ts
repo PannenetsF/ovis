@@ -318,3 +318,12 @@ export function setupLeft(facts: SetupFacts): SetupLeft {
   const parts = [facts.workspace, true, facts.phone, facts.alerts];
   return { done: parts.filter(Boolean).length, total: parts.length, at: !facts.workspace ? "agent" : !facts.phone || !facts.alerts ? "phone" : null };
 }
+
+/**
+ * Whether Turn on alerts left this device without alerts: anything but a confirmed push, except in the desktop app,
+ * where only a refused permission does (its own notifications need no push subscription).
+ */
+export function alertsFailed(result: string, desktop: boolean): boolean {
+  if (result === "sent") return false;
+  return desktop ? result === "permission" : true;
+}

@@ -4,7 +4,7 @@ import { AGENT_CATALOG, catalogRow, type AgentCatalogRow, type AgentInstallState
 import type { HealthAuth, RelayStatus } from "../../shared/protocol.ts";
 import type { ProviderUsage } from "../../shared/usage.ts";
 import { onSetupGuideRequest, openSetupGuide } from "./setupGuide.ts";
-import { agentRows, autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, INSTALL_GIVE_UP_MS, installedHere, openInFolder, otherDevice, phoneBoxMode, phoneBoxOpensFirst, phoneBoxStays, phoneWay, preferredAgent, GUIDE_STORAGE_KEY, readGuide, readSignedIn, relayStep, REOPENED, saveGuide, settleDelay, setupLeft, setupView, signedInAgents, tileState, turnsUsageOn, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
+import { agentRows, alertsFailed, autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, INSTALL_GIVE_UP_MS, installedHere, openInFolder, otherDevice, phoneBoxMode, phoneBoxOpensFirst, phoneBoxStays, phoneWay, preferredAgent, GUIDE_STORAGE_KEY, readGuide, readSignedIn, relayStep, REOPENED, saveGuide, settleDelay, setupLeft, setupView, signedInAgents, tileState, turnsUsageOn, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
 
 const FRESH: FreshFacts = { workspaces: 0, savedSettings: false, sharedRevision: 0, pairingGate: "open", watching: false };
 
@@ -396,5 +396,14 @@ describe("setupLeft", () => {
     expect(setupLeft({ workspace: true, phone: true, alerts: false })).toEqual({ done: 3, total: 4, at: "phone" });
     // a theme is always drawn: it is never left
     expect(setupLeft({ workspace: false, phone: false, alerts: false })).toEqual({ done: 1, total: 4, at: "agent" });
+  });
+});
+
+describe("alertsFailed", () => {
+  it("counts every outcome but a confirmed push as no alerts, except in the desktop app, where only a refusal does", () => {
+    for (const result of ["unsupported", "no-worker", "failed", "gone", "refused", "unregistered", "permission"]) expect(alertsFailed(result, false)).toBe(true);
+    expect(alertsFailed("sent", false)).toBe(false);
+    for (const result of ["unsupported", "no-worker", "failed", "gone", "refused", "sent"]) expect(alertsFailed(result, true)).toBe(false);
+    expect(alertsFailed("permission", true)).toBe(true);
   });
 });

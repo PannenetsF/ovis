@@ -168,13 +168,16 @@ export function useSignedInUsage(ready: readonly string[], read: (refresh: boole
  * A device paired here other than this browser (otherDevice), read from the server while `enabled`, and again when
  * `again` changes; null until it answers, and when it cannot (a watching device, an older server).
  */
-export function useOtherDevice(enabled: boolean, again?: unknown): string | null {
-  const [name, setName] = useState<string | null>(null);
+export function useOtherDevice(enabled: boolean, again?: unknown): string | null;
+/** With `pending`, undefined until the list first answers (or fails), so a caller can wait for it. */
+export function useOtherDevice(enabled: boolean, again: unknown, pending: true): string | null | undefined;
+export function useOtherDevice(enabled: boolean, again?: unknown, pending = false): string | null | undefined {
+  const [name, setName] = useState<string | null | undefined>(undefined);
   useEffect(() => {
     if (!enabled) return;
     let live = true;
-    fetchDevices().then((devices) => { if (live) setName(otherDevice(devices)); }, () => { /* not known: none said */ });
+    fetchDevices().then((devices) => { if (live) setName(otherDevice(devices)); }, () => { if (live) setName((known) => known ?? null); });
     return () => { live = false; };
   }, [enabled, again]);
-  return name;
+  return pending ? name : name ?? null;
 }

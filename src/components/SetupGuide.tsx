@@ -52,6 +52,7 @@ import { themeLabel } from "./ThemeFiles.tsx";
 import { repairFailureText } from "./PushHealthNotice.tsx";
 import { inNativeApp } from "../lib/nativeApp.ts";
 import { desktopUpdateBridge } from "../lib/desktopUpdate.ts";
+import { alertsFailed } from "../lib/setupGuideFlow.ts";
 import { chosenTheme } from "../lib/customThemes.ts";
 import { TelemetryNotice } from "./TelemetryControls.tsx";
 import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
@@ -380,9 +381,8 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
   const installed = agents.filter((agent) => installedHere(agent, ready));
   const [picked, setPicked] = useState<string | null>(null);
   const chosen = installed.find((agent) => agent.id === picked) ?? preferredAgent(installed, ready.at(-1) ?? null);
-  // no agent left to start (Look again found none): the later steps have nothing to finish, so the guide is back on
-  // the agents, and the next pick goes through the steps again rather than jumping to where it was (#3882)
-  useEffect(() => { if (chosen === null && page !== "agent") setPage("agent"); }, [chosen === null, page]); // eslint-disable-line react-hooks/exhaustive-deps
+  // no agent left to start (Look again found none): Done has nothing to start, so the guide is back on the agents
+  // (#3882). The theme and the phone stay reachable without one: Setup: N left reopens the guide there (#3907 review)
   // the step shown: the agents, or Done with its Start
   const pageBefore = useRef(page);
   useEffect(() => { if (page === "done" && chosen === null) setPage("agent"); }, [page, chosen]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -727,6 +727,8 @@ function AlertsHere({ onEnable, notifications: state, reaches, failure, onFailur
     // the button stays to try again; alerts are not on while only an open tab could show them
     try {
       const result = await onEnable();
+      // the desktop app shows its own notifications: only a refused permission keeps alerts off there (#3907 review)
+      if (alertsFailed(result, desktopUpdateBridge() !== null) === false) { onFailure(null); return; }
       // still refused: the line says so, rather than the button doing nothing (#3894 review)
       onFailure(alertsFailureText(t, result));
     } finally { setBusy(null); }

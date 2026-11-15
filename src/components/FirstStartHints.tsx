@@ -70,7 +70,8 @@ export function FirstStartHints({ active }: { active: boolean }) {
   useEffect(() => {
     if (!shown || anchor !== null) return;
     const locate = (): boolean => {
-      if (visible(ANCHORS[0]) === null) return false;
+      // the first hint waits for the workspace's switch; the later ones need only their own anchor (#3907 review)
+      if (step === 0 && visible(ANCHORS[0]) === null) return false;
       for (let index = step; index < ANCHORS.length; index++) {
         const node = visible(ANCHORS[index]!);
         if (node !== null) { if (index !== step) setStep(index); setAnchor(node); return true; }
