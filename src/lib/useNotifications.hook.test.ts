@@ -13,6 +13,7 @@ describe("what Turn on alerts leaves this device", () => {
   let testPushStatus = 204;
   let permission: NotificationPermission = "granted";
   let documentEvents: EventTarget;
+  let permissionEvents: EventTarget;
   let hook: { notifications: string; pushOn: boolean; enable: () => Promise<PushActionResult> };
 
   beforeEach(() => {
@@ -37,7 +38,9 @@ describe("what Turn on alerts leaves this device", () => {
       },
     };
     const registration = { pushManager };
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent: "Mozilla/5.0 Chrome/130", languages: ["en"], serviceWorker: { ready: Promise.resolve(registration), getRegistration: async () => registration } } });
+    permissionEvents = new EventTarget();
+    const permissions = { query: async () => permissionEvents };
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { userAgent: "Mozilla/5.0 Chrome/130", languages: ["en"], permissions, serviceWorker: { ready: Promise.resolve(registration), getRegistration: async () => registration } } });
     Object.defineProperty(globalThis, "PushManager", { configurable: true, value: class {} });
     Object.defineProperty(globalThis, "Notification", { configurable: true, value: { get permission() { return permission; }, requestPermission: async () => permission } });
     const fetch = async (input: string | URL | Request) => {
@@ -86,11 +89,19 @@ describe("what Turn on alerts leaves this device", () => {
     expect(hook.pushOn).toBe(true);
   });
 
-  it("does not count a push on when the confirmation push failed", async () => {
+  it("keeps the push subscription when the confirmation push failed, so the tab does not notify beside it", async () => {
     testPushStatus = 502;
     await mount();
     expect(await enable()).toBe("failed");
-    expect(hook.pushOn).toBe(false);
+    expect(hook.pushOn).toBe(true);
+  });
+
+  it("reads a permission taken back while the page stays in view", async () => {
+    await mount();
+    await enable();
+    permission = "denied";
+    await act(async () => { permissionEvents.dispatchEvent(new Event("change")); });
+    expect(hook.notifications).toBe("denied");
   });
 
   it("reads a permission taken back in the site's settings when the page comes back", async () => {

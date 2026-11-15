@@ -125,6 +125,15 @@ describe("the shared health state", () => {
     resetPushHealth();
   });
 
+  it("is checked once a look answered, and not again after alerts were turned off", async () => {
+    answer = async () => Response.json(gone);
+    expect(readPushHealth().checked).toBe(false);
+    await refreshPushHealth(true);
+    expect(readPushHealth().checked).toBe(true);
+    resetPushHealth();
+    expect(readPushHealth().checked).toBe(false);
+  });
+
   it("reads the server's answer for this browser's subscription, and says nothing when alerts are off", async () => {
     answer = async () => Response.json(gone);
     await refreshPushHealth(true);
@@ -295,7 +304,7 @@ describe("the shared health state", () => {
     expect(readPushHealth().busy).toBe("repair");
     release.resolve();
     await repair;
-    expect(readPushHealth()).toEqual({ health: { problem: null, repair: false, transient: null }, busy: null, result: "sent", dismissed: null });
+    expect(readPushHealth()).toEqual({ health: { problem: null, repair: false, transient: null }, busy: null, result: "sent", dismissed: null, checked: true });
     // a failing action still frees the state, as failed
     await expect(runPushAction("test", async () => { throw new Error("no"); }, () => true)).rejects.toThrow("no");
     expect(readPushHealth().busy).toBeNull();

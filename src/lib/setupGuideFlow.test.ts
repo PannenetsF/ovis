@@ -6,7 +6,7 @@ import type { PushSubscriptionStatus } from "../../shared/push.ts";
 import type { ProviderUsage } from "../../shared/usage.ts";
 import { classifyPushHealth, QUIET } from "./pushHealth.ts";
 import { onSetupGuideRequest, openSetupGuide } from "./setupGuide.ts";
-import { agentRows, alertsArrive, alertsFailed, autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, INSTALL_GIVE_UP_MS, installedHere, openInFolder, otherDevice, phoneBoxMode, phoneBoxOpensFirst, phoneBoxStays, phoneWay, preferredAgent, GUIDE_STORAGE_KEY, readGuide, readSignedIn, relayStep, REOPENED, saveGuide, settleDelay, setupLeft, setupView, signedInAgents, tileState, turnsUsageOn, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
+import { agentRows, alertsArrive, alertsFailed, alertsKnown, autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, INSTALL_GIVE_UP_MS, installedHere, openInFolder, otherDevice, phoneBoxMode, phoneBoxOpensFirst, phoneBoxStays, phoneWay, preferredAgent, GUIDE_STORAGE_KEY, readGuide, readSignedIn, relayStep, REOPENED, saveGuide, settleDelay, setupLeft, setupView, signedInAgents, tileState, turnsUsageOn, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
 
 const FRESH: FreshFacts = { workspaces: 0, savedSettings: false, sharedRevision: 0, pairingGate: "open", watching: false };
 
@@ -383,11 +383,10 @@ describe("otherDevice", () => {
     expect(otherDevice([device("self", true), device("phone", false)])).toBe("device phone");
   });
 
-  it("does not take an account member's device for this PC's phone", () => {
+  it("counts the user's own phone linked through the account", () => {
     const self = { id: "self", label: "this browser", role: "drive" as const, created_at: "2026-11-15T00:00:00Z", last_seen_at: null, current: true };
-    const member = { ...self, id: "member", label: "a member's laptop", current: false, account: "member@example.com" };
-    expect(otherDevice([self, member])).toBeNull();
-    expect(otherDevice([self, member, { ...self, id: "phone", label: "Pixel 9", current: false }])).toBe("Pixel 9");
+    const linked = { ...self, id: "phone", label: "Pixel 9", current: false, via_relay: true, account: "me@example.com" };
+    expect(otherDevice([self, linked])).toBe("Pixel 9");
   });
 });
 
@@ -420,8 +419,8 @@ describe("alertsArrive", () => {
     expect(alertsArrive({ ...on, pushOn: false })).toBe(false);
     // the push service retired the subscription while the page was open (410), as Settings → Alerts tells it
     expect(alertsArrive({ ...on, health: classifyPushHealth({ wanted: true, supported: true, permission: "granted", subscribed: true, keyMatches: true, status: status("gone") }) })).toBe(false);
-    // the last push to it failed (the confirmation push, a reload later)
-    expect(alertsArrive({ ...on, health: classifyPushHealth({ wanted: true, supported: true, permission: "granted", subscribed: true, keyMatches: true, status: status("server") }) })).toBe(false);
+    // a delivery that failed once (the push service, the network) leaves them on, as Settings → Alerts keeps them on
+    expect(alertsArrive({ ...on, health: classifyPushHealth({ wanted: true, supported: true, permission: "granted", subscribed: true, keyMatches: true, status: status("server") }) })).toBe(true);
     // the desktop app shows its own notifications, with no push subscription
     expect(alertsArrive({ ...on, pushOn: false, desktop: true })).toBe(true);
     expect(alertsArrive({ ...on, pushOn: false, desktop: true, notifications: "denied" })).toBe(false);
@@ -432,5 +431,16 @@ describe("a guide opened at a later step", () => {
   it("forgets that step once the user leaves it, so a reload resumes where they are", () => {
     expect(guideStep({ ...REOPENED, at: "phone" }, { type: "moved" })).toEqual(REOPENED);
     expect(guideStep(REOPENED, { type: "moved" })).toBe(REOPENED);
+  });
+});
+
+describe("alertsKnown", () => {
+  it("waits for push health's first answer only where push alerts are wanted and allowed", () => {
+    const wanted = { alertsOn: true, notifications: "granted" as const, desktop: false };
+    expect(alertsKnown({ ...wanted, checked: false })).toBe(false);
+    expect(alertsKnown({ ...wanted, checked: true })).toBe(true);
+    expect(alertsKnown({ ...wanted, alertsOn: false, checked: false })).toBe(true);
+    expect(alertsKnown({ ...wanted, notifications: "denied", checked: false })).toBe(true);
+    expect(alertsKnown({ ...wanted, desktop: true, checked: false })).toBe(true);
   });
 });

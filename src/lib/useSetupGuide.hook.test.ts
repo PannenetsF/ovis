@@ -286,6 +286,20 @@ describe("useOtherDevice", () => {
     if (actBefore) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", actBefore); else delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: unknown }).IS_REACT_ACT_ENVIRONMENT;
   });
 
+  it("with pending, is undefined until the list answers, and null after a failed read", async () => {
+    let seen: (string | null | undefined)[] = [];
+    function Probe() { seen.push(useOtherDevice(true, "x", true)); return null; }
+    await act(async () => { renderer = create(createElement(Probe)); });
+    expect(seen[0]).toBeUndefined();
+    expect(seen.at(-1)).toBe("Pixel 9");
+    await act(async () => { renderer?.unmount(); });
+    Object.defineProperty(globalThis, "fetch", { configurable: true, writable: true, value: async () => { throw new TypeError("Failed to fetch"); } });
+    seen = [];
+    await act(async () => { renderer = create(createElement(Probe)); });
+    expect(seen[0]).toBeUndefined();
+    expect(seen.at(-1)).toBeNull();
+  });
+
   it("reads the devices again when the step changes, and when it is enabled again", async () => {
     function Probe({ enabled, again }: { enabled: boolean; again: string }) { name = useOtherDevice(enabled, again); return null; }
     await act(async () => { renderer = create(createElement(Probe, { enabled: true, again: "phone" })); });

@@ -52,7 +52,7 @@ import { themeLabel } from "./ThemeFiles.tsx";
 import { repairFailureText } from "./PushHealthNotice.tsx";
 import { inNativeApp } from "../lib/nativeApp.ts";
 import { desktopUpdateBridge } from "../lib/desktopUpdate.ts";
-import { alertsArrive, alertsFailed } from "../lib/setupGuideFlow.ts";
+import { alertsArrive, alertsFailed, alertsKnown } from "../lib/setupGuideFlow.ts";
 import { chosenTheme } from "../lib/customThemes.ts";
 import { TelemetryNotice } from "./TelemetryControls.tsx";
 import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
@@ -222,7 +222,7 @@ export function SetupGuide(props: SetupGuideProps) {
         <header className="modal-header setup-head">
           <span className="setup-brand" id="setup-dialog-name"><OvisMark width={24} height={24} />{t("Set up Ovis")}</span>
           {/* the steps' list sits here once the guide has more than one step */}
-          {state.step === "welcome" ? <span className="setup-head-middle" /> : <StepList page={page} />}
+          {state.step === "welcome" ? <span className="setup-head-middle" /> : <StepList page={page} agent={catalog !== null && agentRows(catalog, ready).some((row) => installedHere(row, ready))} />}
           <button type="button" className="icon-button" aria-label={t("Close setup")} title={t("Close setup")} onClick={onClose}><X aria-hidden="true" /></button>
         </header>
         <p className="visually-hidden" role="status">{announced}</p>
@@ -494,8 +494,10 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
   const alertKinds = alertMeWhenChips(t, settings, alertFilters, update, true).filter((chip) => chip.on && !(settings.alertDone === "always" && chip.label === t("Long turn finished"))).map((chip) => chip.label);
   // on only where an alert can arrive: the desktop app's own notifications, or a push subscription that push health
   // finds nothing wrong with; a reload reads it anew, so a failure the step never saw is not shown as on (#3894, #3907 reviews)
-  const { health } = usePushHealth();
-  const alertsOn = alertsArrive({ alertsOn: settings.alertsOn, notifications, pushOn, desktop: desktopUpdateBridge() !== null, health });
+  const { health, checked } = usePushHealth();
+  const desktop = desktopUpdateBridge() !== null;
+  // said on only once push health answered since the load: a subscription whose last push failed is not on meanwhile
+  const alertsOn = alertsKnown({ alertsOn: settings.alertsOn, notifications, desktop, checked }) && alertsArrive({ alertsOn: settings.alertsOn, notifications, pushOn, desktop, health });
   const alertsSummary = alertsOn && alertsFailure === null && alertKinds.length > 0 ? alertKinds.join(", ") : null;
   const usageNote = signedIn.length > 0 && (settings.showUsage || usageOn) && <p className="setup-note"><Gauge aria-hidden="true" />{t("Plan usage will show in the sidebar for your signed-in accounts.")}</p>;
   const errorLine = error !== null && <p className="setup-error" role="alert">{error}</p>;
@@ -654,15 +656,17 @@ interface StepState { page: GuidePage; setPage: (page: GuidePage) => void }
 const STEPS: readonly Exclude<GuidePage, "done">[] = ["agent", "theme", "phone"];
 
 /** The head's list of steps: the one shown is marked current, the ones before it done. */
-function StepList({ page }: { page: GuidePage }) {
+/** `agent`: an agent is installed here; the Agent step is not marked done without one (a guide reopened at a later step) */
+function StepList({ page, agent }: { page: GuidePage; agent: boolean }) {
   const t = useT();
   const at = page === "done" ? STEPS.length : STEPS.indexOf(page);
+  const done = (step: GuidePage, index: number): boolean => index < at && (step !== "agent" || agent);
   const labels: Record<Exclude<GuidePage, "done">, string> = { agent: t("Agent"), theme: t("Theme"), phone: t("Phone and alerts") };
   return (
     <ol className="setup-steps" aria-label={t("Steps")}>
       {STEPS.map((step, index) => (
-        <li key={step} className={index < at ? "is-done" : undefined} aria-current={index === at ? "step" : undefined}>
-          <span className="setup-steps-mark" {...(index < at ? { role: "img", "aria-label": t("Done") } : { "aria-hidden": true })}>{index < at ? <Check aria-hidden="true" /> : index + 1}</span>
+        <li key={step} className={done(step, index) ? "is-done" : undefined} aria-current={index === at ? "step" : undefined}>
+          <span className="setup-steps-mark" {...(done(step, index) ? { role: "img", "aria-label": t("Done") } : { "aria-hidden": true })}>{done(step, index) ? <Check aria-hidden="true" /> : index + 1}</span>
           <span className="setup-steps-label">{labels[step]}</span>
         </li>
       ))}

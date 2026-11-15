@@ -40,8 +40,19 @@ export function useNotificationState() {
     const onVisible = () => { if (document.visibilityState === "visible") read(); };
     if (native) read();
     document.addEventListener("visibilitychange", onVisible);
+    // a browser page also hears a change made while it stays in view (the address bar's site settings): a read of the
+    // permission, never a request
+    let permissionStatus: PermissionStatus | null = null;
+    if (!native && typeof navigator !== "undefined" && navigator.permissions?.query) {
+      navigator.permissions.query({ name: "notifications" }).then((status) => {
+        if (!current) return;
+        permissionStatus = status;
+        status.addEventListener("change", read);
+      }, () => { /* not answerable here: visibilitychange still reads it */ });
+    }
     return () => {
       current = false;
+      permissionStatus?.removeEventListener("change", read);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
@@ -91,9 +102,9 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
       try {
         await sendTestPush(endpoint);
       } catch (err) {
-        // nothing proves a push reaches this device: alerts are not counted on, and the tab shows its own meanwhile (#3907 review)
+        // the subscription stays on the PC, and the next alert is tried through it as usual: the tab stays silent, so
+        // one alert (with its answer buttons) arrives once delivery recovers, never two (#3907 review)
         console.warn("the confirmation push failed", err);
-        setPushOn(false);
         return "failed";
       }
       return "sent";

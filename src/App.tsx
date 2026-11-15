@@ -19,7 +19,7 @@ import { NewSessionDialog } from "./components/NewSessionDialog.tsx";
 import { SetupGuide, SetupGuideResume } from "./components/SetupGuide.tsx";
 import { useOtherDevice, useSetupGuide } from "./lib/useSetupGuide.ts";
 import { armHints, browserStorage, setupRowState } from "./lib/firstHints.ts";
-import { alertsArrive } from "./lib/setupGuideFlow.ts";
+import { alertsArrive, alertsKnown } from "./lib/setupGuideFlow.ts";
 import { SetupProgressRow } from "./components/SetupProgressRow.tsx";
 import { FirstStartHints } from "./components/FirstStartHints.tsx";
 import { SessionHistory } from "./components/SessionHistory.tsx";
@@ -372,9 +372,12 @@ export function App() {
   const rowStore = browserStorage();
   const rowOn = rowFacts && rowStore !== null && setupRowState(rowStore) === "on";
   const otherDevicePaired = useOtherDevice(rowOn, `${pairedNotices.length}:${removedNotices.length}`, true);
-  const { health: alertsHealth } = usePushHealth();
-  const setupRow = rowOn && otherDevicePaired !== undefined
-    ? <SetupProgressRow facts={{ workspace: localSnapshot.workspaces.length > 0, phone: otherDevicePaired !== null, alerts: notifications === "unsupported" || alertsArrive({ alertsOn, notifications, pushOn, desktop: desktopUpdateBridge() !== null, health: alertsHealth }) }} />
+  const { health: alertsHealth, checked: alertsChecked } = usePushHealth();
+  const desktopApp = desktopUpdateBridge() !== null;
+  // and once what is known of the alerts is in: push health's first look since the load (lib/setupGuideFlow.ts alertsKnown)
+  const rowAlertsKnown = alertsKnown({ alertsOn, notifications, desktop: desktopApp, checked: alertsChecked });
+  const setupRow = rowOn && otherDevicePaired !== undefined && rowAlertsKnown
+    ? <SetupProgressRow facts={{ workspace: localSnapshot.workspaces.length > 0, phone: otherDevicePaired !== null, alerts: notifications === "unsupported" || alertsArrive({ alertsOn, notifications, pushOn, desktop: desktopApp, health: alertsHealth }) }} />
     : null;
   // the mode's shell. The setup guide stands in the pane's place before any workspace exists: it keeps the classic one
   const inMode = inboxMode.on && !guideShown;

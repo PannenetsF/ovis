@@ -294,10 +294,14 @@ export function saveGuide(storage: Pick<Storage, "setItem">, state: GuideState |
   } catch { return null; /* private mode: the guide lasts for the page */ }
 }
 
-/** The name of a device paired here other than this browser (a phone, another PC's browser), or null: what the guide counts as a phone. */
+/**
+ * The name of a device paired here other than this browser, or null: what the guide counts as the phone. The list
+ * cannot tell a phone from another PC's browser (#3898), and a device of the PC's own account is often the user's
+ * own phone (linked through the relay), so any other device counts: leaving a paired phone "left" for good is the
+ * worse error. The guide names it neutrally ("{name} is paired").
+ */
 export function otherDevice(devices: readonly PairedDevice[]): string | null {
-  // an account member's device (another person's, docs/account.md) is not this PC's phone (#3894 review)
-  return devices.find((device) => !device.current && device.account === undefined)?.label ?? null;
+  return devices.find((device) => !device.current)?.label ?? null;
 }
 
 /** What the guide sets up, as the sidebar's Setup: N left counts it, each done or not by what the app knows now. */
@@ -335,9 +339,18 @@ export function alertsFailed(result: string, desktop: boolean): boolean {
 /**
  * Whether an alert can arrive on this device now, as the guide's step, its Done and Setup: N left say it: alerts on
  * and allowed, and either the desktop app's own notifications or a push subscription whose health finds nothing wrong
- * (lib/pushHealth.ts: a retired or refused subscription, or a last push that failed, as Settings → Alerts tells it).
+ * (lib/pushHealth.ts: a retired, refused or missing subscription, as Settings → Alerts tells it). A delivery that
+ * failed once (throttled, the network, the push service) leaves alerts on, as Settings keeps them on with its warning.
  */
 export function alertsArrive({ alertsOn, notifications, pushOn, desktop, health }: { alertsOn: boolean; notifications: NotificationState; pushOn: boolean; desktop: boolean; health: PushHealth }): boolean {
   if (!alertsOn || notifications !== "granted") return false;
-  return desktop || (pushOn && health.problem === null && health.transient === null);
+  return desktop || (pushOn && health.problem === null);
+}
+
+/**
+ * Whether alertsArrive can be told yet: a page that wants push alerts knows only once push health first answered
+ * since it loaded (its own registration comes before that look), so nothing is said on or off before it.
+ */
+export function alertsKnown({ alertsOn, notifications, desktop, checked }: { alertsOn: boolean; notifications: NotificationState; desktop: boolean; checked: boolean }): boolean {
+  return !alertsOn || notifications !== "granted" || desktop || checked;
 }
