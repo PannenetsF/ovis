@@ -1,15 +1,15 @@
 import { useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
-import { finishHints, hintsPending } from "../lib/firstHints.ts";
+import { browserStorage as storage, finishHints, FIRST_HINTS_KEY, hintsPending } from "../lib/firstHints.ts";
 import { useT } from "../lib/i18n.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import "./FirstStartHints.css";
 
-const storage = (): Storage | null => {
-  try { return window.localStorage; } catch { return null; }
-};
+/** How many looks (one a frame the page changed in) the hints spend on their anchor at first, and after a click or key. */
+const WATCH_AT_FIRST = 600;
+const WATCH_AFTER_INPUT = 60;
 
 /** Each hint's anchor: the pane's Chat | Terminal switch, the sidebar's Agents section, its New workspace row. */
 const ANCHORS = [".view-switch", ".agents-sidebar > .agent-section-toggle", ".machine-new-row"] as const;
@@ -64,6 +64,12 @@ export function FirstStartHints({ active }: { active: boolean }) {
     setPending(false);
   };
   usePhoneSheetBack(finish, shown && anchor !== null);
+  // closed or seen through in another tab of this browser: gone here too (#3907 review)
+  useEffect(() => {
+    const onStorage = (event: StorageEvent): void => { if (event.key === FIRST_HINTS_KEY || event.key === null) { const store = storage(); setPending(store !== null && hintsPending(store)); } };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   // the hint at `step` or the next one this layout draws, once the workspace's switch is up; none left is the end.
   // Looked for again when its anchor went (re-rendered, or the layout changed)
@@ -80,14 +86,33 @@ export function FirstStartHints({ active }: { active: boolean }) {
       return true;
     };
     if (locate()) return;
-    // one look a frame, however much the page changes meanwhile (a terminal's output, a chat's stream)
+    // one look a frame, however much the page changes meanwhile (a terminal's output, a chat's stream), and only for so
+    // many looks: where the switch does not come (an inbox, a shell's pane) the page is watched again after each click
+    // or key, the way to another pane, rather than on every change for the rest of the session (#3907 review)
     let frame = 0;
+    let looks = 0;
     const observer = new MutationObserver(() => {
       if (frame !== 0) return;
-      frame = requestAnimationFrame(() => { frame = 0; if (locate()) observer.disconnect(); });
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (locate()) stop();
+        else if (--looks === 0) observer.disconnect();
+      });
     });
-    observer.observe(document.body, { childList: true, subtree: true });
-    return () => { observer.disconnect(); cancelAnimationFrame(frame); };
+    const watch = (budget: number): void => {
+      if (looks === 0) observer.observe(document.body, { childList: true, subtree: true });
+      looks = Math.max(looks, budget);
+    };
+    const rewatch = (): void => watch(WATCH_AFTER_INPUT);
+    const stop = (): void => {
+      observer.disconnect();
+      document.removeEventListener("pointerup", rewatch, true);
+      document.removeEventListener("keyup", rewatch, true);
+    };
+    watch(WATCH_AT_FIRST);
+    document.addEventListener("pointerup", rewatch, true);
+    document.addEventListener("keyup", rewatch, true);
+    return () => { stop(); cancelAnimationFrame(frame); };
   }, [shown, step, anchor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useLayoutEffect(() => {

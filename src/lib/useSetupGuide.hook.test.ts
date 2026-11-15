@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { GUIDE_STORAGE_KEY, REOPENED, WELCOME, type GuideState } from "./setupGuideFlow.ts";
+import { SETUP_ROW_KEY } from "./firstHints.ts";
 import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
 import { useOtherDevice, useSetupGuide, type SetupGuideFacts } from "./useSetupGuide.ts";
 
@@ -52,6 +53,17 @@ describe("the setup guide closed in another tab", () => {
     Object.defineProperties(event, { key: { value: GUIDE_STORAGE_KEY }, newValue: { value } });
     await act(async () => { events.dispatchEvent(event); });
   }
+
+  it("turns Setup: N left on when a begun guide closes, and not when it closes at the welcome", async () => {
+    await resumeAt(REOPENED);
+    await act(async () => { hook.close(); });
+    expect(records.get(SETUP_ROW_KEY)).toBe("on");
+    records.clear();
+    await act(async () => { renderer?.unmount(); });
+    await resumeAt(WELCOME);
+    await act(async () => { hook.close(); });
+    expect(records.has(SETUP_ROW_KEY)).toBe(false);
+  });
 
   it("is settled once another tab closes the guide, though this one never decided", async () => {
     function Fresh() { hook = useSetupGuide({ enabled: true, workspaces: null, pairingGate: undefined, watching: false }); return null; }

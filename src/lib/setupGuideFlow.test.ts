@@ -2,9 +2,11 @@ import { describe, expect, it } from "bun:test";
 
 import { AGENT_CATALOG, catalogRow, type AgentCatalogRow, type AgentInstallState } from "../../shared/agent-catalog.ts";
 import type { HealthAuth, RelayStatus } from "../../shared/protocol.ts";
+import type { PushSubscriptionStatus } from "../../shared/push.ts";
 import type { ProviderUsage } from "../../shared/usage.ts";
+import { classifyPushHealth, QUIET } from "./pushHealth.ts";
 import { onSetupGuideRequest, openSetupGuide } from "./setupGuide.ts";
-import { agentRows, alertsFailed, autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, INSTALL_GIVE_UP_MS, installedHere, openInFolder, otherDevice, phoneBoxMode, phoneBoxOpensFirst, phoneBoxStays, phoneWay, preferredAgent, GUIDE_STORAGE_KEY, readGuide, readSignedIn, relayStep, REOPENED, saveGuide, settleDelay, setupLeft, setupView, signedInAgents, tileState, turnsUsageOn, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
+import { agentRows, alertsArrive, alertsFailed, autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, INSTALL_GIVE_UP_MS, installedHere, openInFolder, otherDevice, phoneBoxMode, phoneBoxOpensFirst, phoneBoxStays, phoneWay, preferredAgent, GUIDE_STORAGE_KEY, readGuide, readSignedIn, relayStep, REOPENED, saveGuide, settleDelay, setupLeft, setupView, signedInAgents, tileState, turnsUsageOn, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
 
 const FRESH: FreshFacts = { workspaces: 0, savedSettings: false, sharedRevision: 0, pairingGate: "open", watching: false };
 
@@ -405,5 +407,30 @@ describe("alertsFailed", () => {
     expect(alertsFailed("sent", false)).toBe(false);
     for (const result of ["unsupported", "no-worker", "failed", "gone", "refused", "sent"]) expect(alertsFailed(result, true)).toBe(false);
     expect(alertsFailed("permission", true)).toBe(true);
+  });
+});
+
+describe("alertsArrive", () => {
+  const on = { alertsOn: true, notifications: "granted" as const, pushOn: true, desktop: false, health: QUIET };
+  const status = (failure: "gone" | "server"): PushSubscriptionStatus => ({ registered: true, last_success_at: "2026-11-15T00:00:00Z", last_failure: failure, last_failure_at: "2026-11-15T00:05:00Z" });
+  it("is on only where an alert can arrive: a push subscription push health finds nothing wrong with, or the desktop app", () => {
+    expect(alertsArrive(on)).toBe(true);
+    expect(alertsArrive({ ...on, alertsOn: false })).toBe(false);
+    expect(alertsArrive({ ...on, notifications: "denied" })).toBe(false);
+    expect(alertsArrive({ ...on, pushOn: false })).toBe(false);
+    // the push service retired the subscription while the page was open (410), as Settings → Alerts tells it
+    expect(alertsArrive({ ...on, health: classifyPushHealth({ wanted: true, supported: true, permission: "granted", subscribed: true, keyMatches: true, status: status("gone") }) })).toBe(false);
+    // the last push to it failed (the confirmation push, a reload later)
+    expect(alertsArrive({ ...on, health: classifyPushHealth({ wanted: true, supported: true, permission: "granted", subscribed: true, keyMatches: true, status: status("server") }) })).toBe(false);
+    // the desktop app shows its own notifications, with no push subscription
+    expect(alertsArrive({ ...on, pushOn: false, desktop: true })).toBe(true);
+    expect(alertsArrive({ ...on, pushOn: false, desktop: true, notifications: "denied" })).toBe(false);
+  });
+});
+
+describe("a guide opened at a later step", () => {
+  it("forgets that step once the user leaves it, so a reload resumes where they are", () => {
+    expect(guideStep({ ...REOPENED, at: "phone" }, { type: "moved" })).toEqual(REOPENED);
+    expect(guideStep(REOPENED, { type: "moved" })).toBe(REOPENED);
   });
 });

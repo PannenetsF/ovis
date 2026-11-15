@@ -122,6 +122,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Test notification": "테스트 알림",
   "Sends one alert to this device now, so you can check that push alerts arrive here. If it cannot be sent, the line under the name says so.": "지금 이 기기로 알림을 하나 보내 푸시 알림이 여기에 도착하는지 확인합니다. 보낼 수 없으면 이름 아래 줄에서 알려 줍니다.",
   "Test notification sent. Check this device for the alert.": "테스트 알림을 보냈습니다. 이 기기에 알림이 도착했는지 확인하세요.",
+  "Allow notifications to test alerts on this device.": "이 기기에서 알림을 테스트하려면 알림을 허용하세요.",
   "The last alert did not reach this device; the next one is tried as usual. Send a test to check.": "마지막 알림이 이 기기에 닿지 않았습니다. 다음 알림은 평소처럼 다시 보냅니다. 테스트를 보내 확인하세요.",
   "Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.": "릴레이는 PC 소유자만 직접 연결해서 제어할 수 있습니다. PC에서 Ovis를 열거나 PC의 직접 주소로 접속하세요.",
   "Blocked: OVIS_TAILSCALE_SERVE_ONLY says tailscale serve is the only way in. Unset it on this PC and restart the app.": "차단됨: OVIS_TAILSCALE_SERVE_ONLY가 tailscale serve를 유일한 접속 경로로 정하고 있습니다. 이 PC에서 해제하고 앱을 다시 시작하세요.",

@@ -11,6 +11,8 @@ import type { HealthAuth, PairedDevice, RelayStatus } from "../../shared/protoco
 import type { SetupStep } from "./agentSetup.ts";
 import type { ProviderUsage } from "../../shared/usage.ts";
 import { isSignIn } from "./usage.ts";
+import type { NotificationState } from "./notifications.ts";
+import type { PushHealth } from "./pushHealth.ts";
 
 export interface GuideState {
   step: "welcome" | "setup";
@@ -20,14 +22,16 @@ export interface GuideState {
   at?: "theme" | "phone";
 }
 
-/** I'm new to Ovis; Back from the first step to the welcome */
-export type GuideEvent = { type: "begin" } | { type: "back" };
+/** I'm new to Ovis; Back from the first step to the welcome; the user left the step the guide was opened at */
+export type GuideEvent = { type: "begin" } | { type: "back" } | { type: "moved" };
 
 export const WELCOME: GuideState = { step: "welcome" };
 /** Settings → Agents' Open setup guide opens the setup screen itself */
 export const REOPENED: GuideState = { step: "setup", reopened: true };
 
 export function guideStep(state: GuideState, event: GuideEvent): GuideState {
+  // a reload resumes where the user is, not at the step Setup: N left named (`at` comes only with a reopened guide)
+  if (event.type === "moved") return state.at === undefined ? state : REOPENED;
   if (event.type === "begin") return state.step === "welcome" ? { step: "setup" } : state;
   // a guide opened again from Settings has no welcome to go back to
   return state.step === "setup" && state.reopened !== true ? WELCOME : state;
@@ -326,4 +330,14 @@ export function setupLeft(facts: SetupFacts): SetupLeft {
 export function alertsFailed(result: string, desktop: boolean): boolean {
   if (result === "sent") return false;
   return desktop ? result === "permission" : true;
+}
+
+/**
+ * Whether an alert can arrive on this device now, as the guide's step, its Done and Setup: N left say it: alerts on
+ * and allowed, and either the desktop app's own notifications or a push subscription whose health finds nothing wrong
+ * (lib/pushHealth.ts: a retired or refused subscription, or a last push that failed, as Settings → Alerts tells it).
+ */
+export function alertsArrive({ alertsOn, notifications, pushOn, desktop, health }: { alertsOn: boolean; notifications: NotificationState; pushOn: boolean; desktop: boolean; health: PushHealth }): boolean {
+  if (!alertsOn || notifications !== "granted") return false;
+  return desktop || (pushOn && health.problem === null && health.transient === null);
 }

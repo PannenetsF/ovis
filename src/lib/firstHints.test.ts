@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { armHints, finishHints, FIRST_HINTS_KEY, hideSetupRow, hintsPending, setupRowOn, setupRowState } from "./firstHints.ts";
+import { armHints, browserStorage, finishHints, FIRST_HINTS_KEY, hideSetupRow, hintsPending, setupRowOn, setupRowState } from "./firstHints.ts";
 
 const memory = () => {
   const values = new Map<string, string>();
@@ -37,5 +37,17 @@ describe("the sidebar's setup row", () => {
     hideSetupRow(storage);
     setupRowOn(storage);
     expect(setupRowState(storage)).toBe("hidden");
+  });
+});
+
+describe("browserStorage", () => {
+  it("is null where reading the store itself throws, rather than taking the app down", () => {
+    const before = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", { configurable: true, value: Object.defineProperty({}, "localStorage", { get: () => { throw new DOMException("blocked", "SecurityError"); } }) });
+    try {
+      expect(browserStorage()).toBeNull();
+    } finally {
+      if (before) Object.defineProperty(globalThis, "window", before); else Reflect.deleteProperty(globalThis, "window");
+    }
   });
 });

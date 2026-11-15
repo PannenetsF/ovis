@@ -1,14 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { X } from "lucide-react";
-import { hideSetupRow, setupRowState } from "../lib/firstHints.ts";
+import { browserStorage as storage, hideSetupRow, SETUP_ROW_KEY, setupRowState } from "../lib/firstHints.ts";
 import { useT } from "../lib/i18n.ts";
 import { openSetupGuide } from "../lib/setupGuide.ts";
 import { setupLeft, type SetupFacts } from "../lib/setupGuideFlow.ts";
 import "./SetupProgressRow.css";
-
-const storage = (): Storage | null => {
-  try { return window.localStorage; } catch { return null; }
-};
 
 /**
  * The sidebar's Setup: N left, once a setup guide that was begun closed with something not set up (the agent, the
@@ -20,6 +16,12 @@ export function SetupProgressRow({ facts }: { facts: SetupFacts }) {
   const t = useT();
   // read as it mounts, which is once the guide is gone: a begun guide that just closed has marked it on
   const [hidden, setHidden] = useState(() => { const store = storage(); return store === null || setupRowState(store) !== "on"; });
+  // hidden in another tab of this browser: hidden here too (#3907 review)
+  useEffect(() => {
+    const onStorage = (event: StorageEvent): void => { if (event.key === SETUP_ROW_KEY || event.key === null) { const store = storage(); setHidden(store === null || setupRowState(store) !== "on"); } };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   const left = setupLeft(facts);
   const at = left.at;
   if (hidden || at === null) return null;

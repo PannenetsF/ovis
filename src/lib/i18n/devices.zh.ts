@@ -122,6 +122,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Test notification": "测试通知",
   "Sends one alert to this device now, so you can check that push alerts arrive here. If it cannot be sent, the line under the name says so.": "立即向此设备发送一条通知，以便确认推送通知能否送达这里。无法发送时，名称下方的一行会给出提示。",
   "Test notification sent. Check this device for the alert.": "测试通知已发送。请检查此设备是否收到通知。",
+  "Allow notifications to test alerts on this device.": "请允许通知，以便在此设备上测试提醒。",
   "The last alert did not reach this device; the next one is tried as usual. Send a test to check.": "上一条提醒未能送达此设备；下一条会照常发送。请发送测试以确认。",
   "Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.": "只有 PC 所有者通过直接连接才能控制中继。请在 PC 上打开 Ovis，或访问 PC 的直接地址。",
   "Blocked: OVIS_TAILSCALE_SERVE_ONLY says tailscale serve is the only way in. Unset it on this PC and restart the app.": "已阻止：OVIS_TAILSCALE_SERVE_ONLY 规定 tailscale serve 是唯一的访问途径。请在此 PC 上取消它并重启应用。",

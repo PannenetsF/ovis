@@ -28,15 +28,17 @@ export function useNotificationState() {
   const [notifications, setNotifications] = useState<NotificationState>(() => notificationState());
   // in the phone app the permission is the app's (lib/notifications.ts): read from the app at load,
   // and again whenever the page comes back, as it may have been changed in the phone's Settings
-  // meanwhile. A browser page keeps the permission it read at load, as before.
+  // meanwhile. A browser page reads its own again when it comes back too: it may have been taken back
+  // in the site's settings, and alerts are then not on (#3907 review).
   useEffect(() => {
-    if (!hasNativePlugin(PUSH_PLUGIN)) return;
+    const native = hasNativePlugin(PUSH_PLUGIN);
     let current = true;
     const read = () => {
+      if (!native) { setNotifications(notificationState()); return; }
       refreshNotificationState().then(() => { if (current) setNotifications(notificationState()); }, (err) => console.warn("could not read the notification permission", err));
     };
     const onVisible = () => { if (document.visibilityState === "visible") read(); };
-    read();
+    if (native) read();
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       current = false;
@@ -89,7 +91,9 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
       try {
         await sendTestPush(endpoint);
       } catch (err) {
+        // nothing proves a push reaches this device: alerts are not counted on, and the tab shows its own meanwhile (#3907 review)
         console.warn("the confirmation push failed", err);
+        setPushOn(false);
         return "failed";
       }
       return "sent";

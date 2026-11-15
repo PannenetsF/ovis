@@ -40,3 +40,8 @@ export function setupRowOn(storage: HintsStorage): void {
 export function hideSetupRow(storage: HintsStorage): void {
   try { storage.setItem(SETUP_ROW_KEY, "hidden"); } catch { /* private mode: hidden for this page */ }
 }
+
+/** This browser's storage, or null where it is blocked: reading `window.localStorage` itself throws there (Safari with cookies blocked, a sandboxed frame). */
+export function browserStorage(): Storage | null {
+  try { return window.localStorage; } catch { return null; }
+}

@@ -16,10 +16,10 @@ import { worktreeRepoName } from "./lib/composerStrip.ts";
 import { AccessGate } from "./components/AccessGate.tsx";
 import { AgentMark } from "./components/AgentMark.tsx";
 import { NewSessionDialog } from "./components/NewSessionDialog.tsx";
-import { alertsReachHere, SetupGuide, SetupGuideResume } from "./components/SetupGuide.tsx";
+import { SetupGuide, SetupGuideResume } from "./components/SetupGuide.tsx";
 import { useOtherDevice, useSetupGuide } from "./lib/useSetupGuide.ts";
-import { setupRowState } from "./lib/firstHints.ts";
-import { armHints } from "./lib/firstHints.ts";
+import { armHints, browserStorage, setupRowState } from "./lib/firstHints.ts";
+import { alertsArrive } from "./lib/setupGuideFlow.ts";
 import { SetupProgressRow } from "./components/SetupProgressRow.tsx";
 import { FirstStartHints } from "./components/FirstStartHints.tsx";
 import { SessionHistory } from "./components/SessionHistory.tsx";
@@ -74,9 +74,9 @@ import { CRAMPED_QUERY, paneContextPress, soloPane, tabRowHidden } from "./lib/p
 import { useTabSheet } from "./lib/useTabSheet.ts";
 import type { AppActions, PaneView, PaneControls } from "./lib/actions.ts";
 import { removePushSubscription } from "./lib/push.ts";
-import { resetPushHealth } from "./lib/pushHealth.ts";
+import { resetPushHealth, usePushHealth } from "./lib/pushHealth.ts";
 import { useUpdates } from "./lib/updates.ts";
-import { useDesktopUpdate } from "./lib/desktopUpdate.ts";
+import { desktopUpdateBridge, useDesktopUpdate } from "./lib/desktopUpdate.ts";
 import { DesktopUpdateNotice, UpdateNotice } from "./components/UpdateControls.tsx";
 import { LanExposureNotice } from "./components/LanExposureNotice.tsx";
 import { PushHealthNotice } from "./components/PushHealthNotice.tsx";
@@ -365,14 +365,16 @@ export function App() {
   });
   const guideShown = setupGuide.guide !== null && !setupGuide.paused;
   // the sidebar's Setup: N left (components/SetupProgressRow.tsx), once the guide is gone; the phone is another
-  // device on the server's list, read again when one pairs (pairedNotices)
+  // device on the server's list, read again when one pairs or goes (pairedNotices, removedNotices)
   const rowFacts = setupGuide.guide === null && auth?.role !== "watch" && localSnapshot !== null;
   // read only where the row can show (a guide begun and closed, and not hidden), and drawn once the list answered, so
   // a paired phone does not count as left for a moment (#3907 review)
-  const rowOn = rowFacts && setupRowState(localStorage) === "on";
-  const otherDevicePaired = useOtherDevice(rowOn, pairedNotices.length, true);
+  const rowStore = browserStorage();
+  const rowOn = rowFacts && rowStore !== null && setupRowState(rowStore) === "on";
+  const otherDevicePaired = useOtherDevice(rowOn, `${pairedNotices.length}:${removedNotices.length}`, true);
+  const { health: alertsHealth } = usePushHealth();
   const setupRow = rowOn && otherDevicePaired !== undefined
-    ? <SetupProgressRow facts={{ workspace: localSnapshot.workspaces.length > 0, phone: otherDevicePaired !== null, alerts: notifications === "unsupported" || (alertsOn && notifications === "granted" && alertsReachHere(pushOn)) }} />
+    ? <SetupProgressRow facts={{ workspace: localSnapshot.workspaces.length > 0, phone: otherDevicePaired !== null, alerts: notifications === "unsupported" || alertsArrive({ alertsOn, notifications, pushOn, desktop: desktopUpdateBridge() !== null, health: alertsHealth }) }} />
     : null;
   // the mode's shell. The setup guide stands in the pane's place before any workspace exists: it keeps the classic one
   const inMode = inboxMode.on && !guideShown;
