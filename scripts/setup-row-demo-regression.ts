@@ -49,11 +49,14 @@ try {
     { width: 1920, height: 1080 },
     { width: 1280, height: 720 },
     { width: 390, height: 844, phone: true },
+    // a narrow window: the sidebar is a closed drawer up to 768px, so no hint points at it
+    { width: 700, height: 900, drawer: true },
   ] as const;
   for (const size of sizes) {
     for (const theme of ["dark", "light"] as const) {
       const at = `${size.width}x${size.height}-${theme}`;
       const phone = "phone" in size;
+      const drawer = "drawer" in size;
       const context = await browser.newContext(phone
         ? { viewport: { width: size.width, height: size.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: "en-US", colorScheme: theme }
         : { viewport: { width: size.width, height: size.height }, locale: "en-US", colorScheme: theme });
@@ -74,15 +77,15 @@ try {
       try {
         await page.goto(root);
         await page.locator(".conn-live").waitFor({ state: "attached" });
-        if (phone) {
-          // a phone's sidebar is a closed drawer, and its header draws no Chat | Terminal switch: no hint over the pane,
-          // once the pane is up (its title in the header)
+        if (phone || drawer) {
+          // a phone's or a narrow window's sidebar is a closed drawer: no hint, at the pane or at the sidebar, once the
+          // pane is up (its title in the header)
           await page.locator(".conn-live").waitFor({ state: "attached" });
           await page.getByText("Idempotent payments", { exact: true }).first().waitFor();
           await settled(page);
           await settled(page);
-          assert.equal(await page.locator(".first-hint").count(), 0, `no hint on a phone ${at}`);
-          console.log(`PASS no first-start hint on a phone (${at})`);
+          assert.equal(await page.locator(".first-hint").count(), 0, `no hint where the sidebar is a drawer ${at}`);
+          console.log(`PASS no first-start hint where the sidebar is a drawer (${at})`);
           continue;
         }
 

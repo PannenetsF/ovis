@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { recordConfirmation } from "./pushConfirm.ts";
 import type { AlertPrefs } from "../../shared/notify-policy.ts";
 import type { Settings } from "./settings.ts";
 import { ApiError, sendTestPush } from "./api.ts";
@@ -44,11 +45,14 @@ export function useNotificationState() {
     // permission, never a request
     let permissionStatus: PermissionStatus | null = null;
     if (!native && typeof navigator !== "undefined" && navigator.permissions?.query) {
-      navigator.permissions.query({ name: "notifications" }).then((status) => {
-        if (!current) return;
-        permissionStatus = status;
-        status.addEventListener("change", read);
-      }, () => { /* not answerable here: visibilitychange still reads it */ });
+      // a webview that throws rather than rejects is the same as one that cannot answer
+      try {
+        navigator.permissions.query({ name: "notifications" }).then((status) => {
+          if (!current) return;
+          permissionStatus = status;
+          status.addEventListener("change", read);
+        }, () => { /* not answerable here: visibilitychange still reads it */ });
+      } catch { /* as above */ }
     }
     return () => {
       current = false;
@@ -101,7 +105,9 @@ export function useNotificationSwitch({ updateSettings, locked, notifications, s
       // the confirmation push proves the whole path (server -> push service -> this device)
       try {
         await sendTestPush(endpoint);
+        recordConfirmation(endpoint, true);
       } catch (err) {
+        recordConfirmation(endpoint, false);
         // the subscription stays on the PC, and the next alert is tried through it as usual: the tab stays silent, so
         // one alert (with its answer buttons) arrives once delivery recovers, never two (#3907 review)
         console.warn("the confirmation push failed", err);

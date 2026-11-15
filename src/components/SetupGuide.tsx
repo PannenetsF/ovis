@@ -33,7 +33,7 @@ import { useSettings, type Settings } from "../lib/settings.ts";
 import { useAlertFilters } from "../lib/alertFilters.ts";
 import { alertMeWhenChips } from "./AlertChips.tsx";
 import { pageNotifications, showTestNotification, type NotificationState } from "../lib/notifications.ts";
-import { usePushHealth, type PushActionResult } from "../lib/pushHealth.ts";
+import { refreshPushHealth, usePushHealth, type PushActionResult } from "../lib/pushHealth.ts";
 import { pickTheme, rowFor, THEME_IDS, type Mode, type ThemeId } from "../lib/themes.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { agentRows, checkList, foundAgents, installedHere, phoneBoxMode, phoneBoxOpensFirst, phoneBoxStays, phoneWay, openInFolder, preferredAgent, relayStep, settleDelay, setupView, signedInAgents, turnsUsageOn, type CheckStatus, type GuideEvent, type GuideState, type PcCheck, type PhoneBoxOpening } from "../lib/setupGuideFlow.ts";
@@ -52,7 +52,9 @@ import { themeLabel } from "./ThemeFiles.tsx";
 import { repairFailureText } from "./PushHealthNotice.tsx";
 import { inNativeApp } from "../lib/nativeApp.ts";
 import { desktopUpdateBridge } from "../lib/desktopUpdate.ts";
-import { alertsArrive, alertsFailed, alertsKnown } from "../lib/setupGuideFlow.ts";
+import { alertsFailed, alertsHere, alertsSurfaces, type AlertsHere as AlertsAnswer } from "../lib/setupGuideFlow.ts";
+import { pushSupported, registeredPushEndpoint } from "../lib/push.ts";
+import { confirmation } from "../lib/pushConfirm.ts";
 import { chosenTheme } from "../lib/customThemes.ts";
 import { TelemetryNotice } from "./TelemetryControls.tsx";
 import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
@@ -492,13 +494,15 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
   // what alerts this computer gets, as Done names them: Settings → Alerts' chips that are on; none while alerts are off or refused
   // Any turn finished takes in the long ones, so the summary names it alone
   const alertKinds = alertMeWhenChips(t, settings, alertFilters, update, true).filter((chip) => chip.on && !(settings.alertDone === "always" && chip.label === t("Long turn finished"))).map((chip) => chip.label);
-  // on only where an alert can arrive: the desktop app's own notifications, or a push subscription that push health
-  // finds nothing wrong with; a reload reads it anew, so a failure the step never saw is not shown as on (#3894, #3907 reviews)
-  const { health, checked } = usePushHealth();
-  const desktop = desktopUpdateBridge() !== null;
-  // said on only once push health answered since the load: a subscription whose last push failed is not on meanwhile
-  const alertsOn = alertsKnown({ alertsOn: settings.alertsOn, notifications, desktop, checked }) && alertsArrive({ alertsOn: settings.alertsOn, notifications, pushOn, desktop, health });
-  const alertsSummary = alertsOn && alertsFailure === null && alertKinds.length > 0 ? alertKinds.join(", ") : null;
+  // one rule for the step, Done and Setup: N left, from what the PC recorded of this browser's subscription; what the
+  // last Turn on alerts came to is a line here only (lib/setupGuideFlow.ts alertsHere; #3894, #3907 reviews)
+  const { health, checked, delivered } = usePushHealth();
+  const alerts = alertsHere({ alertsOn: settings.alertsOn, notifications, desktop: desktopUpdateBridge() !== null, pushSupported: pushSupported(), pushOn, push: { checked, problem: health.problem, delivered }, confirmed: confirmation(registeredPushEndpoint()) });
+  // a look that does not answer is tried again when the page comes back into view and on Try again; past a bound the
+  // step and Done say it could not be checked, rather than Checking for ever
+  const uncheckable = useLongerThan(alerts === "checking", ALERTS_CHECK_GIVE_UP_MS);
+  const alertsDone = alertsSurfaces(alerts).done;
+  const alertsSummary = alertsDone === "done" && alertKinds.length > 0 ? alertKinds.join(", ") : null;
   const usageNote = signedIn.length > 0 && (settings.showUsage || usageOn) && <p className="setup-note"><Gauge aria-hidden="true" />{t("Plan usage will show in the sidebar for your signed-in accounts.")}</p>;
   const errorLine = error !== null && <p className="setup-error" role="alert">{error}</p>;
   const signInDialog = signingIn && <UsageSignInDialog request={signingIn} onOpenTerminal={(paneId) => { setSigningIn(null); onOpenTerminal(paneId); }} onSignedIn={() => setSignedHere((done) => [...done, signingIn.provider])} onClose={() => setSigningIn(null)} />;
@@ -524,14 +528,14 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
         <div className="setup-main">
           <StepTitle firstFocus={firstFocus}>{t("Stay in touch with your agents")}</StepTitle>
           <p className="setup-lead">{t("Get alerts on this computer. Connect your phone to get them there too.")}</p>
-          <AlertsHere onEnable={onEnableAlerts} notifications={notifications} arrive={alertsOn} failure={alertsFailure} onFailure={setAlertsFailure} />
+          <AlertsHere onEnable={onEnableAlerts} notifications={notifications} alerts={alerts} uncheckable={uncheckable} failure={alertsFailure} onFailure={setAlertsFailure} />
           {errorLine}
           {notice}
         </div>
         <aside className="setup-side" aria-labelledby="setup-phone-label">
           <span className="setup-label" id="setup-phone-label">{t("On your phone")}</span>
           {phoneName !== null
-            ? <p className="setup-paired"><CircleCheck aria-hidden="true" />{t("{name} is paired. Alerts can reach it too.", { name: phoneName })}</p>
+            ? <p className="setup-paired"><CircleCheck aria-hidden="true" />{t("{name} is paired.", { name: phoneName })}</p>
             : <p className="setup-text">{t("Scan a QR code with your phone's camera to see and answer your agents there.")}</p>}
           <div className="setup-actions">
             <button type="button" className="btn" disabled={opening} aria-expanded={phone !== null} onClick={() => setPhone(phone === null ? "tap" : null)}><Smartphone aria-hidden="true" />{t("Connect your phone")}</button>
@@ -564,7 +568,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
             <li className="setup-item is-done"><CircleCheck role="img" aria-label={t("Done")} /><span className="setup-summary-row"><span className="setup-summary-name">{t("Theme")}</span><span>{themeSummary}</span></span></li>
             <li className={phoneName !== null ? "setup-item is-done" : "setup-item"}>{phoneName !== null ? <CircleCheck role="img" aria-label={t("Done")} /> : <Circle role="img" aria-label={t("Not yet")} />}<span className="setup-summary-row"><span className="setup-summary-name">{t("Phone")}</span>
               {phoneName !== null ? <span>{phoneName}</span> : <span>{t("Later")} <button type="button" className="setup-link" disabled={locked} onClick={() => setPage("phone")}>{t("Connect now")}</button></span>}</span></li>
-            <li className={alertsSummary === null ? "setup-item" : "setup-item is-done"}>{alertsSummary === null ? <Circle role="img" aria-label={t("Not yet")} /> : <CircleCheck role="img" aria-label={t("Done")} />}<span className="setup-summary-row"><span className="setup-summary-name">{t("Alerts")}</span><span>{alertsSummary ?? t("Alerts off")}</span></span></li>
+            <li className={alertsSummary === null ? "setup-item" : "setup-item is-done"}>{alertsSummary === null ? <Circle role="img" aria-label={t("Not yet")} /> : <CircleCheck role="img" aria-label={t("Done")} />}<span className="setup-summary-row"><span className="setup-summary-name">{t("Alerts")}</span><span>{alertsSummary ?? (alertsDone === "checking" ? (uncheckable ? t("Could not check alerts with this PC.") : t("Checking…")) : t("Alerts off"))}</span></span></li>
           </ul>
           {usageNote}
           {errorLine}
@@ -721,7 +725,7 @@ function ThemePreview() {
  * once. The test is the page's own notification, as an open tab of Ovis shows its alerts, so it works in the
  * desktop app too, where web push does not reach; Settings → Alerts' test goes through the push service.
  */
-function AlertsHere({ onEnable, notifications: state, arrive, failure, onFailure }: { onEnable: () => Promise<PushActionResult>; notifications: NotificationState; arrive: boolean; failure: string | null; onFailure: (text: string | null) => void }) {
+function AlertsHere({ onEnable, notifications: state, alerts, uncheckable, failure, onFailure }: { onEnable: () => Promise<PushActionResult>; notifications: NotificationState; alerts: AlertsAnswer; uncheckable: boolean; failure: string | null; onFailure: (text: string | null) => void }) {
   const t = useT();
   const { settings, update } = useSettings();
   const filters = useAlertFilters();
@@ -745,11 +749,12 @@ function AlertsHere({ onEnable, notifications: state, arrive, failure, onFailure
     setLine(null);
     try { setLine(await showTestNotification(t("Test alert"), t("This is how an alert from Ovis looks on this computer.")) ? "sent" : "failed"); } finally { setBusy(null); }
   };
-  const on = arrive && failure === null;
+  const shown = alertsSurfaces(alerts).step;
+  const on = shown === "send-test";
   return (
     <div className="setup-field setup-alerts">
       <span className="setup-label">{t("On this computer")}</span>
-      {state === "unsupported" ? <p className="setup-note"><Info aria-hidden="true" />{t("Push alerts need HTTPS or localhost, and on iPhone the home-screen app.")}</p>
+      {shown === "note" ? <p className="setup-note"><Info aria-hidden="true" />{t("Push alerts need HTTPS or localhost, and on iPhone the home-screen app.")}</p>
         : state === "denied" ? (
           <>
             <p className="setup-note setup-note-blocked"><TriangleAlert aria-hidden="true" /><span><strong>{t("This computer blocks alerts from Ovis.")}</strong> {inNativeApp() ? t("Allow notifications for Ovis in the phone's Settings, then try again.") : t("Allow notifications in your browser settings, then try again.")}</span></p>
@@ -758,7 +763,15 @@ function AlertsHere({ onEnable, notifications: state, arrive, failure, onFailure
               <button type="button" className="btn" disabled={busy !== null} onClick={() => void enable()}><Bell aria-hidden="true" />{busy === "enable" ? t("Turning alerts on…") : t("Try again")}</button>
             </div>
           </>
-        ) : !on && (
+        ) : shown === "checking" ? (uncheckable ? (
+          <>
+            <p className="setup-note"><Info aria-hidden="true" />{t("Could not check alerts with this PC.")}</p>
+            <div className="setup-actions">
+              <button type="button" className="btn" onClick={() => void refreshPushHealth(true)}><Bell aria-hidden="true" />{t("Try again")}</button>
+            </div>
+          </>
+        ) : <p className="setup-note"><Info aria-hidden="true" />{t("Checking…")}</p>)
+        : !on && (
           <div className="setup-actions">
             <button type="button" className="btn" disabled={busy !== null} onClick={() => void enable()}><Bell aria-hidden="true" />{busy === "enable" ? t("Turning alerts on…") : t("Turn on alerts")}</button>
           </div>
@@ -774,6 +787,21 @@ function AlertsHere({ onEnable, notifications: state, arrive, failure, onFailure
       <p className="setup-muted" role="status">{failure !== null ? failure : line === "sent" ? t("Test alert sent. It should be on your screen now.") : line === "failed" ? t("Could not send the test notification. Try again.") : null}</p>
     </div>
   );
+}
+
+/** How long the step and Done say Checking… for alerts before they say it could not be checked, with Try again. */
+const ALERTS_CHECK_GIVE_UP_MS = 15_000;
+
+/** Whether `on` has held for `ms` without a break. */
+function useLongerThan(on: boolean, ms: number): boolean {
+  const [past, setPast] = useState(false);
+  useEffect(() => {
+    setPast(false);
+    if (!on) return;
+    const timer = window.setTimeout(() => setPast(true), ms);
+    return () => window.clearTimeout(timer);
+  }, [on, ms]);
+  return on && past;
 }
 
 /** How many of a side's own themes show before Show all themes: two rows of three. */

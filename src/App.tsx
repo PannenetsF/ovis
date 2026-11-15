@@ -19,7 +19,9 @@ import { NewSessionDialog } from "./components/NewSessionDialog.tsx";
 import { SetupGuide, SetupGuideResume } from "./components/SetupGuide.tsx";
 import { useOtherDevice, useSetupGuide } from "./lib/useSetupGuide.ts";
 import { armHints, browserStorage, setupRowState } from "./lib/firstHints.ts";
-import { alertsArrive, alertsKnown } from "./lib/setupGuideFlow.ts";
+import { alertsHere, alertsSurfaces } from "./lib/setupGuideFlow.ts";
+import { pushSupported, registeredPushEndpoint } from "./lib/push.ts";
+import { confirmation } from "./lib/pushConfirm.ts";
 import { SetupProgressRow } from "./components/SetupProgressRow.tsx";
 import { FirstStartHints } from "./components/FirstStartHints.tsx";
 import { SessionHistory } from "./components/SessionHistory.tsx";
@@ -371,13 +373,12 @@ export function App() {
   // a paired phone does not count as left for a moment (#3907 review)
   const rowStore = browserStorage();
   const rowOn = rowFacts && rowStore !== null && setupRowState(rowStore) === "on";
-  const otherDevicePaired = useOtherDevice(rowOn, `${pairedNotices.length}:${removedNotices.length}`, true);
-  const { health: alertsHealth, checked: alertsChecked } = usePushHealth();
-  const desktopApp = desktopUpdateBridge() !== null;
-  // and once what is known of the alerts is in: push health's first look since the load (lib/setupGuideFlow.ts alertsKnown)
-  const rowAlertsKnown = alertsKnown({ alertsOn, notifications, desktop: desktopApp, checked: alertsChecked });
-  const setupRow = rowOn && otherDevicePaired !== undefined && rowAlertsKnown
-    ? <SetupProgressRow facts={{ workspace: localSnapshot.workspaces.length > 0, phone: otherDevicePaired !== null, alerts: notifications === "unsupported" || alertsArrive({ alertsOn, notifications, pushOn, desktop: desktopApp, health: alertsHealth }) }} />
+  const otherDevicePaired = useOtherDevice(rowOn, [...pairedNotices, ...removedNotices].map((notice) => notice.event_id).join(" "), true);
+  // and once what is known of the alerts is in, by the guide's one rule (lib/setupGuideFlow.ts alertsHere)
+  const alertsHealth = usePushHealth();
+  const rowAlerts = alertsSurfaces(alertsHere({ alertsOn, notifications, desktop: desktopUpdateBridge() !== null, pushSupported: pushSupported(), pushOn, push: { checked: alertsHealth.checked, problem: alertsHealth.health.problem, delivered: alertsHealth.delivered }, confirmed: confirmation(registeredPushEndpoint()) })).row;
+  const setupRow = rowOn && otherDevicePaired !== undefined && rowAlerts !== "wait"
+    ? <SetupProgressRow facts={{ workspace: localSnapshot.workspaces.length > 0, phone: otherDevicePaired !== null, alerts: rowAlerts === "done" }} />
     : null;
   // the mode's shell. The setup guide stands in the pane's place before any workspace exists: it keeps the classic one
   const inMode = inboxMode.on && !guideShown;

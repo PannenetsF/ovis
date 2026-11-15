@@ -114,8 +114,10 @@ export interface PushHealthState {
   result: PushActionResult | null;
   /** the fault whose notice this device closed: Settings still tells it, the notice does not until another fault or a working look */
   dismissed: PushProblem | null;
-  /** a look since the page loaded (or alerts were last turned off) has answered: until then nothing is known either way */
+  /** a look since the page loaded (or alerts were last turned off) got the PC's answer: until then nothing is known either way */
   checked: boolean;
+  /** the PC recorded a push that reached this subscription (last_success_at); null where it cannot say (an older server, the open LAN, no worker) */
+  delivered: boolean | null;
 }
 
 const DISMISSED_KEY = "ovis:push-notice-dismissed";
@@ -135,7 +137,7 @@ function writeDismissed(problem: PushProblem | null): void {
   } catch { /* storage blocked: the dismissal lasts until the page reloads */ }
 }
 
-let state: PushHealthState = { health: QUIET, busy: null, result: null, dismissed: readDismissed(), checked: false };
+let state: PushHealthState = { health: QUIET, busy: null, result: null, dismissed: readDismissed(), checked: false, delivered: null };
 const listeners = new Set<() => void>();
 /** every refresh takes a number; an answer to an older one is dropped (a later success, disable or new subscription has spoken since) */
 let generation = 0;
@@ -246,7 +248,7 @@ export async function refreshPushHealth(wanted: boolean): Promise<void> {
     if (now !== undefined && now !== endpoint) return refreshPushHealth(wanted);
   }
   // the PC out of reach says nothing new: what was known stands, a notice included, until it answers again
-  if (!reached) { if (!state.checked) setState({ ...state, checked: true }); return; }
+  if (!reached) return;
   let health = classifyPushHealth(input);
   // a fault found later is the latest word: the line of an earlier test does not stand beside it, nor
   // does the line of a test or repair of a subscription since replaced. Why a repair failed is about
@@ -264,7 +266,8 @@ export async function refreshPushHealth(wanted: boolean): Promise<void> {
   const stored = readDismissed(state.dismissed);
   const dismissed = keptDismissal(stored, health, input);
   if (dismissed !== stored) writeDismissed(dismissed);
-  setState({ ...state, health, result, dismissed, checked: true });
+  const delivered = typeof input.status === "object" && input.status !== null ? input.status.last_success_at !== null : null;
+  setState({ ...state, health, result, dismissed, checked: true, delivered });
 }
 
 /**
@@ -293,7 +296,7 @@ export function resetPushHealth(): void {
   actions += 1;
   resultFor = undefined;
   writeDismissed(null);
-  setState({ health: QUIET, busy: null, result: null, dismissed: null, checked: false });
+  setState({ health: QUIET, busy: null, result: null, dismissed: null, checked: false, delivered: null });
 }
 
 /**

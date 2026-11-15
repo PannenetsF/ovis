@@ -17,7 +17,8 @@ const ANCHORS = [".view-switch", ".agents-sidebar > .agent-section-toggle", ".ma
 const visible = (selector: string): HTMLElement | null => {
   const node = document.querySelector<HTMLElement>(selector);
   const box = node?.getBoundingClientRect();
-  return node && box && box.width > 0 && box.height > 0 ? node : null;
+  // drawn and in the window: a sidebar put away as a drawer keeps its size off-screen
+  return node && box && box.width > 0 && box.height > 0 && box.right > 0 && box.bottom > 0 && box.left < window.innerWidth && box.top < window.innerHeight ? node : null;
 };
 
 /** where the card goes, and how far along its edge the arrow sits to point at the anchor's centre */
@@ -40,7 +41,7 @@ function placeBy(anchor: HTMLElement, width: number, height: number): Place {
  * The three first-start hints, one small popover at a time, after the setup guide's first run started an agent
  * (lib/firstHints.ts): what Chat and Terminal are, where a waiting agent shows, how to start another. They wait
  * for the workspace's Chat | Terminal switch, skip an anchor this layout does not draw, and are done for good once
- * closed or seen through. Wide windows only: a phone's sidebar is a closed drawer. Nothing takes the keyboard from
+ * closed or seen through. Only where the sidebar is drawn (wider than 768px): up to there it is a closed drawer. Nothing takes the keyboard from
  * the pane, and nothing is announced: a hint is there to be seen, and Next and the close button come after the
  * pane in the Tab order (the hint is drawn at the end of the page).
  */
@@ -56,7 +57,8 @@ export function FirstStartHints({ active }: { active: boolean }) {
     { title: t("Agents that wait for you come first"), text: t("A waiting agent is marked here, whichever workspace it is in.") },
     { title: t("Start another agent"), text: t("A new workspace runs an agent in a folder you choose.") },
   ];
-  const wide = useMediaQuery("(min-width: 641px)");
+  // where the sidebar is drawn beside the pane: up to 768px it is a closed drawer (MachineSidebar.tsx DRAWER_QUERY)
+  const wide = useMediaQuery("(min-width: 769px)");
   const shown = active && pending && wide;
   const finish = (): void => {
     const store = storage();

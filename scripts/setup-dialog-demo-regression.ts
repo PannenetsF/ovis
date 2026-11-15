@@ -351,7 +351,7 @@ try {
             await guide.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
             await guide.getByRole("heading", { name: "Pick a look", exact: true }).waitFor();
             await guide.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
-            await guide.locator(".setup-side").getByText("Pixel 9 is paired. Alerts can reach it too.", { exact: true }).waitFor();
+            await guide.locator(".setup-side").getByText("Pixel 9 is paired.", { exact: true }).waitFor();
             await guide.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
             await guide.getByRole("heading", { name: "Ovis is ready", exact: true }).waitFor();
             const row = guide.locator(".setup-summary li").filter({ hasText: "Phone" });

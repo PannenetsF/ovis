@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { resetPushHealth, type PushActionResult } from "./pushHealth.ts";
+import { resetPushHealth, usePushHealth, type PushActionResult } from "./pushHealth.ts";
+import { pushSupported, registeredPushEndpoint } from "./push.ts";
+import { confirmation } from "./pushConfirm.ts";
+import { alertsHere, type AlertsHere } from "./setupGuideFlow.ts";
 import { useNotificationState, useNotificationSwitch } from "./useNotifications.ts";
 import type { AlertPrefs } from "../../shared/notify-policy.ts";
 
@@ -11,20 +14,31 @@ describe("what Turn on alerts leaves this device", () => {
   const key = Buffer.from(new Uint8Array(65).fill(4)).toString("base64url");
   let renderer: ReactTestRenderer | undefined;
   let testPushStatus = 204;
+  // what the fake PC recorded for the subscription, and how its status route answers
+  let lastSuccess: string | null = null;
+  let lastFailure: string | null = null;
+  let statusRoute: "record" | "error" | "no-device" = "record";
+  let storage: Map<string, string>;
+  let rendered: (() => void)[] = [];
   let permission: NotificationPermission = "granted";
   let documentEvents: EventTarget;
   let permissionEvents: EventTarget;
-  let hook: { notifications: string; pushOn: boolean; enable: () => Promise<PushActionResult> };
+  let hook: { notifications: string; pushOn: boolean; enable: () => Promise<PushActionResult>; alerts: AlertsHere };
 
   beforeEach(() => {
     testPushStatus = 204;
     permission = "granted";
+    lastSuccess = null;
+    lastFailure = null;
+    statusRoute = "record";
+    storage = new Map();
+    rendered = [];
     for (const name of ["window", "document", "navigator", "PushManager", "Notification", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     const windowEvents = new EventTarget();
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
       location: { href: "https://pc.example/", hostname: "pc.example", protocol: "https:" },
-      localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+      localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => void storage.set(key, value), removeItem: (key: string) => void storage.delete(key) },
       addEventListener: windowEvents.addEventListener.bind(windowEvents), removeEventListener: windowEvents.removeEventListener.bind(windowEvents),
     } });
     documentEvents = new EventTarget();
@@ -47,8 +61,16 @@ describe("what Turn on alerts leaves this device", () => {
       const path = new URL(String(input instanceof Request ? input.url : input), "https://pc.example").pathname;
       if (path === "/api/push") return Response.json({ public_key: key });
       if (path === "/api/push/subscribe") return new Response(null, { status: 204 });
-      if (path === "/api/push/test") return testPushStatus === 204 ? new Response(null, { status: 204 }) : Response.json({ error: { code: "push_failed", message: "push service 502" } }, { status: testPushStatus });
-      if (path === "/api/push/status") return Response.json({ registered: true, last_success_at: null, last_failure: null, last_failure_at: null });
+      if (path === "/api/push/test") {
+        if (testPushStatus === 204) { lastSuccess = "2026-11-15T00:00:01Z"; return new Response(null, { status: 204 }); }
+        lastFailure = "server";
+        return Response.json({ error: { code: "push_failed", message: "push service 502" } }, { status: testPushStatus });
+      }
+      if (path === "/api/push/status") {
+        if (statusRoute === "error") return Response.json({ error: { code: "internal_error", message: "boom" } }, { status: 500 });
+        if (statusRoute === "no-device") return Response.json({ error: { code: "status_unavailable", message: "no device" } }, { status: 403 });
+        return Response.json({ registered: true, last_success_at: lastSuccess, last_failure: lastFailure, last_failure_at: lastFailure === null ? null : "2026-11-15T00:00:02Z" });
+      }
       return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
     };
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
@@ -70,11 +92,26 @@ describe("what Turn on alerts leaves this device", () => {
     const alerts = { input: true, permission: true, done: "long" } as unknown as AlertPrefs;
     function Probe() {
       const state = useNotificationState();
+      const health = usePushHealth();
       const { enableNotifications } = useNotificationSwitch({ updateSettings: () => {}, locked: true, notifications: state.notifications, setNotifications: state.setNotifications, alerts, alertsRef: { current: alerts }, alertsOn: true, setPushOn: state.setPushOn });
-      hook = { notifications: state.notifications, pushOn: state.pushOn, enable: enableNotifications };
+      const answer = alertsHere({ alertsOn: true, notifications: state.notifications, desktop: false, pushSupported: pushSupported(), pushOn: state.pushOn, push: { checked: health.checked, problem: health.health.problem, delivered: health.delivered }, confirmed: confirmation(registeredPushEndpoint()) });
+      hook = { notifications: state.notifications, pushOn: state.pushOn, enable: enableNotifications, alerts: answer };
+      for (const listener of rendered.splice(0)) listener();
       return null;
     }
     await act(async () => { renderer = create(createElement(Probe)); });
+  }
+
+  /** Resolves once the guide's rule gives an answer other than Checking, within a bound. */
+  async function settled(): Promise<AlertsHere> {
+    await act(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`alerts still ${hook.alerts}`)), 2000);
+        const look = (): void => { if (hook.alerts !== "checking") { clearTimeout(timer); resolve(); } else rendered.push(look); };
+        look();
+      });
+    });
+    return hook.alerts;
   }
 
   async function enable(): Promise<PushActionResult> {
@@ -110,5 +147,36 @@ describe("what Turn on alerts leaves this device", () => {
     permission = "denied";
     await act(async () => { documentEvents.dispatchEvent(new Event("visibilitychange")); });
     expect(hook.notifications).toBe("denied");
+  });
+
+  // the guide's rule (lib/setupGuideFlow.ts alertsHere) over the real hooks: what the PC recorded decides
+  it("reads on once the PC recorded the confirmation push, without a reload", async () => {
+    await mount();
+    expect(await enable()).toBe("sent");
+    expect(await settled()).toBe("on");
+  });
+
+  it("reads off when the confirmation push failed for a while and nothing was ever delivered", async () => {
+    testPushStatus = 502;
+    await mount();
+    expect(await enable()).toBe("failed");
+    expect(await settled()).toBe("off");
+  });
+
+  it("says nothing while the PC's record cannot be read", async () => {
+    await mount();
+    await enable();
+    resetPushHealth();
+    statusRoute = "error";
+    await act(async () => { documentEvents.dispatchEvent(new Event("visibilitychange")); });
+    expect(hook.alerts).toBe("checking");
+  });
+
+  it("where the PC cannot say (the open LAN), reads off after this browser saw its confirmation push fail", async () => {
+    statusRoute = "no-device";
+    testPushStatus = 502;
+    await mount();
+    expect(await enable()).toBe("failed");
+    expect(await settled()).toBe("off");
   });
 });

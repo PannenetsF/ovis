@@ -2,11 +2,9 @@ import { describe, expect, it } from "bun:test";
 
 import { AGENT_CATALOG, catalogRow, type AgentCatalogRow, type AgentInstallState } from "../../shared/agent-catalog.ts";
 import type { HealthAuth, RelayStatus } from "../../shared/protocol.ts";
-import type { PushSubscriptionStatus } from "../../shared/push.ts";
 import type { ProviderUsage } from "../../shared/usage.ts";
-import { classifyPushHealth, QUIET } from "./pushHealth.ts";
 import { onSetupGuideRequest, openSetupGuide } from "./setupGuide.ts";
-import { agentRows, alertsArrive, alertsFailed, alertsKnown, autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, INSTALL_GIVE_UP_MS, installedHere, openInFolder, otherDevice, phoneBoxMode, phoneBoxOpensFirst, phoneBoxStays, phoneWay, preferredAgent, GUIDE_STORAGE_KEY, readGuide, readSignedIn, relayStep, REOPENED, saveGuide, settleDelay, setupLeft, setupView, signedInAgents, tileState, turnsUsageOn, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
+import { agentRows, alertsFailed, alertsHere, alertsSurfaces, type AlertsFacts, type AlertsHere, autoOpen, CHECK_SETTLE_MS, checkList, checkStatus, foundAgents, guideStep, INSTALL_GIVE_UP_MS, installedHere, openInFolder, otherDevice, phoneBoxMode, phoneBoxOpensFirst, phoneBoxStays, phoneWay, preferredAgent, GUIDE_STORAGE_KEY, readGuide, readSignedIn, relayStep, REOPENED, saveGuide, settleDelay, setupLeft, setupView, signedInAgents, tileState, turnsUsageOn, WELCOME, type FreshFacts, type PcCheck } from "./setupGuideFlow.ts";
 
 const FRESH: FreshFacts = { workspaces: 0, savedSettings: false, sharedRevision: 0, pairingGate: "open", watching: false };
 
@@ -409,21 +407,47 @@ describe("alertsFailed", () => {
   });
 });
 
-describe("alertsArrive", () => {
-  const on = { alertsOn: true, notifications: "granted" as const, pushOn: true, desktop: false, health: QUIET };
-  const status = (failure: "gone" | "server"): PushSubscriptionStatus => ({ registered: true, last_success_at: "2026-11-15T00:00:00Z", last_failure: failure, last_failure_at: "2026-11-15T00:05:00Z" });
-  it("is on only where an alert can arrive: a push subscription push health finds nothing wrong with, or the desktop app", () => {
-    expect(alertsArrive(on)).toBe(true);
-    expect(alertsArrive({ ...on, alertsOn: false })).toBe(false);
-    expect(alertsArrive({ ...on, notifications: "denied" })).toBe(false);
-    expect(alertsArrive({ ...on, pushOn: false })).toBe(false);
-    // the push service retired the subscription while the page was open (410), as Settings → Alerts tells it
-    expect(alertsArrive({ ...on, health: classifyPushHealth({ wanted: true, supported: true, permission: "granted", subscribed: true, keyMatches: true, status: status("gone") }) })).toBe(false);
-    // a delivery that failed once (the push service, the network) leaves them on, as Settings → Alerts keeps them on
-    expect(alertsArrive({ ...on, health: classifyPushHealth({ wanted: true, supported: true, permission: "granted", subscribed: true, keyMatches: true, status: status("server") }) })).toBe(true);
-    // the desktop app shows its own notifications, with no push subscription
-    expect(alertsArrive({ ...on, pushOn: false, desktop: true })).toBe(true);
-    expect(alertsArrive({ ...on, pushOn: false, desktop: true, notifications: "denied" })).toBe(false);
+describe("alertsHere: what the step, Done and Setup: N left say of this device's alerts", () => {
+  // Every case the #3907 reviews found, by what the page knows and what the PC recorded. The rule reads nothing the
+  // page remembers of its own presses, so a reload or a reopen gives the same answer from the same record (rows marked
+  // "reload" are what that record is by then).
+  const record = (fields: Partial<AlertsFacts["push"]> = {}): AlertsFacts["push"] => ({ checked: true, problem: null, delivered: true, ...fields });
+  const base: AlertsFacts = { alertsOn: true, notifications: "granted", desktop: false, pushSupported: true, pushOn: true, push: record(), confirmed: null };
+  const rows: [string, Partial<AlertsFacts>, AlertsHere][] = [
+    ["the Alerts switch off", { alertsOn: false }, "off"],
+    ["never subscribed: permission not asked yet", { notifications: "default", pushOn: false, push: record({ delivered: null }) }, "off"],
+    ["subscribed, and a push to it delivered", {}, "on"],
+    ["the confirmation push refused for good (rejected)", { push: record({ problem: "rejected", delivered: false }) }, "off"],
+    ["the confirmation push refused for good (key mismatch)", { push: record({ problem: "key-mismatch", delivered: false }) }, "off"],
+    ["the confirmation push failed for a while, never delivered (and after a reload)", { push: record({ delivered: false }) }, "off"],
+    ["delivered once, then a push failed for a while", { push: record({ delivered: true }) }, "on"],
+    ["the push service retired it (410), once a look read it (visibility, reload)", { push: record({ problem: "gone" }) }, "off"],
+    ["the permission taken back, tab in view or hidden", { notifications: "denied", push: record({ problem: "permission" }) }, "off"],
+    ["push health not answered yet since the load", { push: record({ checked: false, delivered: null }) }, "checking"],
+    ["push health's request failed (500, the network): not checked", { push: record({ checked: false, delivered: null }) }, "checking"],
+    ["the subscription missing on the PC", { push: record({ problem: "missing", delivered: null }) }, "off"],
+    ["the desktop app, notifications allowed", { desktop: true, pushSupported: false, pushOn: false, push: record({ checked: false, delivered: null }) }, "on"],
+    ["the desktop app, notifications refused", { desktop: true, notifications: "denied", pushSupported: false, pushOn: false }, "off"],
+    ["no Notification API (plain http)", { notifications: "unsupported", pushSupported: false, pushOn: false }, "unavailable"],
+    ["notifications but no push (not the desktop app)", { pushSupported: false, pushOn: false, push: record({ delivered: null }) }, "off"],
+    ["an older server or the open LAN: no record, the confirmation push got through", { push: record({ delivered: null }), confirmed: true }, "on"],
+    ["an older server or the open LAN: no record, the confirmation push failed (and after a reload)", { push: record({ delivered: null }), confirmed: false }, "off"],
+    ["an older server or the open LAN: no record, subscribed before the outcome was kept: as before", { push: record({ delivered: null }), confirmed: null }, "on"],
+    ["an older server or the open LAN: no record, no subscription", { pushOn: false, push: record({ delivered: null }) }, "off"],
+  ];
+  for (const [name, facts, expected] of rows) {
+    it(name, () => {
+      expect(alertsHere({ ...base, ...facts })).toBe(expected);
+    });
+  }
+
+  it("shows each answer the same way on the step, Done and the row", () => {
+    expect(alertsSurfaces("on")).toEqual({ step: "send-test", done: "done", row: "done" });
+    expect(alertsSurfaces("off")).toEqual({ step: "turn-on", done: "not-yet", row: "left" });
+    // nothing said either way, and the row waits, as it waits for the device list
+    expect(alertsSurfaces("checking")).toEqual({ step: "checking", done: "checking", row: "wait" });
+    // nothing to set up here: the row does not count it as left
+    expect(alertsSurfaces("unavailable")).toEqual({ step: "note", done: "not-yet", row: "done" });
   });
 });
 
@@ -434,13 +458,3 @@ describe("a guide opened at a later step", () => {
   });
 });
 
-describe("alertsKnown", () => {
-  it("waits for push health's first answer only where push alerts are wanted and allowed", () => {
-    const wanted = { alertsOn: true, notifications: "granted" as const, desktop: false };
-    expect(alertsKnown({ ...wanted, checked: false })).toBe(false);
-    expect(alertsKnown({ ...wanted, checked: true })).toBe(true);
-    expect(alertsKnown({ ...wanted, alertsOn: false, checked: false })).toBe(true);
-    expect(alertsKnown({ ...wanted, notifications: "denied", checked: false })).toBe(true);
-    expect(alertsKnown({ ...wanted, desktop: true, checked: false })).toBe(true);
-  });
-});

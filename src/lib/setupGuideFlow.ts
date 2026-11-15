@@ -336,21 +336,50 @@ export function alertsFailed(result: string, desktop: boolean): boolean {
   return desktop ? result === "permission" : true;
 }
 
-/**
- * Whether an alert can arrive on this device now, as the guide's step, its Done and Setup: N left say it: alerts on
- * and allowed, and either the desktop app's own notifications or a push subscription whose health finds nothing wrong
- * (lib/pushHealth.ts: a retired, refused or missing subscription, as Settings → Alerts tells it). A delivery that
- * failed once (throttled, the network, the push service) leaves alerts on, as Settings keeps them on with its warning.
- */
-export function alertsArrive({ alertsOn, notifications, pushOn, desktop, health }: { alertsOn: boolean; notifications: NotificationState; pushOn: boolean; desktop: boolean; health: PushHealth }): boolean {
-  if (!alertsOn || notifications !== "granted") return false;
-  return desktop || (pushOn && health.problem === null);
+/** What the guide's step, its Done and Setup: N left say of this device's alerts (alertsHere). */
+export type AlertsHere = "on" | "off" | "checking" | "unavailable";
+
+export interface AlertsFacts {
+  /** the Alerts switch */
+  alertsOn: boolean;
+  notifications: NotificationState;
+  /** the desktop app: its own notifications need no push */
+  desktop: boolean;
+  /** this browser has web push (lib/push.ts pushSupported) */
+  pushSupported: boolean;
+  /** the registration (at load, or Turn on alerts) made a subscription (App's pushOn) */
+  pushOn: boolean;
+  /** what the PC recorded of this browser's subscription (lib/pushHealth.ts) */
+  push: { checked: boolean; problem: PushHealth["problem"]; delivered: boolean | null };
+  /** where the PC cannot say: whether this browser's last Turn on alerts got its confirmation push through, null for no record (lib/pushConfirm.ts) */
+  confirmed: boolean | null;
 }
 
 /**
- * Whether alertsArrive can be told yet: a page that wants push alerts knows only once push health first answered
- * since it loaded (its own registration comes before that look), so nothing is said on or off before it.
+ * Whether alerts reach this device, by one rule for the step, Done and Setup: N left (#3907 review's truth table,
+ * setupGuideFlow.test.ts): from the switch, the permission, and what the PC recorded of this browser's subscription,
+ * never from what the page remembers of its own presses. A subscription counts only once the PC recorded a push that
+ * reached it: a confirmation push that never got through is not on, while a failure after a delivery leaves it on,
+ * as Settings → Alerts keeps it on with its warning. Nothing is said before a look reached the PC.
  */
-export function alertsKnown({ alertsOn, notifications, desktop, checked }: { alertsOn: boolean; notifications: NotificationState; desktop: boolean; checked: boolean }): boolean {
-  return !alertsOn || notifications !== "granted" || desktop || checked;
+export function alertsHere({ alertsOn, notifications, desktop, pushSupported, pushOn, push, confirmed }: AlertsFacts): AlertsHere {
+  if (!alertsOn) return "off";
+  if (desktop) return notifications === "granted" ? "on" : "off";
+  if (notifications === "unsupported") return "unavailable";
+  if (notifications !== "granted" || !pushSupported) return "off";
+  if (!push.checked) return "checking";
+  if (push.problem !== null) return "off";
+  // an older server or the open LAN cannot say: the subscription made stands, unless this browser saw its confirmation
+  // push fail; one made before that was kept stands, as before the rule
+  if (push.delivered === null) return pushOn && confirmed !== false ? "on" : "off";
+  return push.delivered ? "on" : "off";
+}
+
+/** How the step, Done and Setup: N left show each answer of alertsHere. */
+export function alertsSurfaces(alerts: AlertsHere): { step: "send-test" | "turn-on" | "checking" | "note"; done: "done" | "not-yet" | "checking"; row: "done" | "left" | "wait" } {
+  if (alerts === "on") return { step: "send-test", done: "done", row: "done" };
+  if (alerts === "checking") return { step: "checking", done: "checking", row: "wait" };
+  // nothing can be set up here (plain http): the row does not count it as left
+  if (alerts === "unavailable") return { step: "note", done: "not-yet", row: "done" };
+  return { step: "turn-on", done: "not-yet", row: "left" };
 }
