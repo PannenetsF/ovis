@@ -476,6 +476,12 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
   const pairedBefore = useOtherDevice((page === "phone" || page === "done") && !settingsOpen, page);
   const [alertsFailure, setAlertsFailure] = useState<string | null>(null);
   const [pairedNow, setPairedNow] = useState<string | null>(null);
+  // Settings closed: the list read again speaks for the devices, a name kept from the box would outlive its removal there
+  const settingsBefore = useRef(settingsOpen);
+  useEffect(() => {
+    if (settingsBefore.current && !settingsOpen) setPairedNow(null);
+    settingsBefore.current = settingsOpen;
+  }, [settingsOpen]);
   const phoneName = pairedNow ?? pairedBefore;
   const alertFilters = useAlertFilters();
   // what alerts this computer gets, as Done names them: Settings → Alerts' chips that are on; none while alerts are off or refused
@@ -713,7 +719,11 @@ function AlertsHere({ onEnable, notifications: state, failure, onFailure }: { on
     onFailure(null);
     // what Turn on alerts reports back: a push subscription that failed is said, as Settings → Alerts says it, and
     // the button stays to try again; alerts are not on while only an open tab could show them
-    try { onFailure(repairFailureText(t, await onEnable())); } finally { setBusy(null); }
+    try {
+      const result = await onEnable();
+      // still refused: the line says so, rather than the button doing nothing (#3894 review)
+      onFailure(result === "permission" ? t("Allow notifications to test alerts on this device.") : repairFailureText(t, result));
+    } finally { setBusy(null); }
   };
   const test = async (): Promise<void> => {
     setBusy("test");
@@ -778,9 +788,12 @@ function ThemeStep({ firstFocus, children }: { firstFocus: FirstFocus; children:
   const own = THEME_IDS.filter((id) => rowFor(id, side).mode === side);
   const others = THEME_IDS.filter((id) => rowFor(id, side).mode !== side);
   // a theme saved outside the first six keeps its card for as long as the step is open, though the keyboard moves off it
-  const kept = useRef(new Set<ThemeId>());
-  if (current !== null && !own.slice(0, THEMES_FIRST).includes(current)) kept.current.add(current);
-  const shown = all ? [...own, ...others] : own.slice(0, THEMES_FIRST).concat([...own.slice(THEMES_FIRST), ...others].filter((id) => kept.current.has(id)));
+  // kept per side: a theme kept on the dark side is no stray card in the light list (#3894 review)
+  const keptBySide = useRef(new Map<Mode, Set<ThemeId>>());
+  const kept = keptBySide.current.get(side) ?? new Set<ThemeId>();
+  keptBySide.current.set(side, kept);
+  if (current !== null && !own.slice(0, THEMES_FIRST).includes(current)) kept.add(current);
+  const shown = all ? [...own, ...others] : own.slice(0, THEMES_FIRST).concat([...own.slice(THEMES_FIRST), ...others].filter((id) => kept.has(id)));
   const pick = (id: ThemeId): void => update((latest) => ({ ...pickTheme(latest, side, id), customThemes: { ...latest.customThemes, [side]: null } }));
   // a radio group's arrows pick as they move
   const step = (event: ReactKeyboardEvent<HTMLDivElement>): void => {

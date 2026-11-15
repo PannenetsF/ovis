@@ -122,7 +122,6 @@ export const DEVICES_JA: Record<string, string> = {
   "Test notification": "テスト通知",
   "Sends one alert to this device now, so you can check that push alerts arrive here. If it cannot be sent, the line under the name says so.": "このデバイスに今すぐ通知を 1 件送り、プッシュ通知がここに届くか確認できます。送れないときは、名前の下の行でお知らせします。",
   "Test notification sent. Check this device for the alert.": "テスト通知を送信しました。このデバイスに通知が届いたか確認してください。",
-  "Allow notifications to test alerts on this device.": "このデバイスで通知をテストするには、通知を許可してください。",
   "The last alert did not reach this device; the next one is tried as usual. Send a test to check.": "最後の通知はこのデバイスに届きませんでした。次の通知は通常どおり送られます。テストを送って確認してください。",
   "Only the PC's owner can control the relay, using a direct connection. Open Ovis on the PC or at its direct address.": "リレーを操作できるのは、PC に直接接続した所有者だけです。PC 上で Ovis を開くか、PC の直接のアドレスにアクセスしてください。",
   "Blocked: OVIS_TAILSCALE_SERVE_ONLY says tailscale serve is the only way in. Unset it on this PC and restart the app.": "ブロック中: OVIS_TAILSCALE_SERVE_ONLY により tailscale serve が唯一の入口になっています。この PC で解除し、アプリを再起動してください。",

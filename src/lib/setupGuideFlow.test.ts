@@ -380,6 +380,13 @@ describe("otherDevice", () => {
     expect(otherDevice([device("self", true)])).toBeNull();
     expect(otherDevice([device("self", true), device("phone", false)])).toBe("device phone");
   });
+
+  it("does not take an account member's device for this PC's phone", () => {
+    const self = { id: "self", label: "this browser", role: "drive" as const, created_at: "2026-11-15T00:00:00Z", last_seen_at: null, current: true };
+    const member = { ...self, id: "member", label: "a member's laptop", current: false, account: "member@example.com" };
+    expect(otherDevice([self, member])).toBeNull();
+    expect(otherDevice([self, member, { ...self, id: "phone", label: "Pixel 9", current: false }])).toBe("Pixel 9");
+  });
 });
 
 describe("setupLeft", () => {

@@ -292,7 +292,8 @@ export function saveGuide(storage: Pick<Storage, "setItem">, state: GuideState |
 
 /** The name of a device paired here other than this browser (a phone, another PC's browser), or null: what the guide counts as a phone. */
 export function otherDevice(devices: readonly PairedDevice[]): string | null {
-  return devices.find((device) => !device.current)?.label ?? null;
+  // an account member's device (another person's, docs/account.md) is not this PC's phone (#3894 review)
+  return devices.find((device) => !device.current && device.account === undefined)?.label ?? null;
 }
 
 /** What the guide sets up, as the sidebar's Setup: N left counts it, each done or not by what the app knows now. */

@@ -274,6 +274,8 @@ try {
             const mode = dialog.getByRole("group", { name: "Theme", exact: true });
             await mode.getByRole("button", { name: "Light", exact: true }).click();
             await dialog.getByRole("radiogroup", { name: "Light theme", exact: true }).waitFor();
+            // Nord, kept on the dark side, is no stray card in the light list (#3894 review)
+            assert.equal(await dialog.getByRole("radiogroup", { name: "Light theme", exact: true }).locator("[data-theme-card='nord']").count(), 0, `a theme kept on the dark side is not in the light list ${at}`);
             await mode.getByRole("button", { name: "Dark", exact: true }).click();
             await grid.waitFor();
             // on System, the computer turning light under a focused dark card: the keyboard goes to the light side's cards

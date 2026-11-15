@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { GUIDE_STORAGE_KEY, REOPENED, WELCOME, type GuideState } from "./setupGuideFlow.ts";
 import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
-import { useSetupGuide, type SetupGuideFacts } from "./useSetupGuide.ts";
+import { useOtherDevice, useSetupGuide, type SetupGuideFacts } from "./useSetupGuide.ts";
 
 // The real hook over a fake browser: one tab's storage, and the storage events another tab's writes send.
 describe("the setup guide closed in another tab", () => {
@@ -249,5 +249,42 @@ describe("the setup guide on a watching device", () => {
     await update({ enabled: true, workspaces: 0, pairingGate: "open", watching: false });
     await act(async () => { await Promise.resolve(); });
     expect(hook.settled).toBe(true);
+  });
+});
+
+// The device list the guide reads: again on each step that shows it (`again`), and when Settings closes (`enabled`).
+describe("useOtherDevice", () => {
+  const fetchBefore = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+  const actBefore = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  let reads = 0;
+  let renderer: ReactTestRenderer | undefined;
+  let name: string | null = null;
+  beforeEach(() => {
+    reads = 0;
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    Object.defineProperty(globalThis, "fetch", { configurable: true, writable: true, value: async (input: RequestInfo | URL) => {
+      if (String(input).includes("/api/devices")) reads += 1;
+      return new Response(JSON.stringify({ devices: [{ id: "phone", label: "Pixel 9", role: "drive", created_at: "2026-11-15T00:00:00Z", last_seen_at: null, current: false }] }), { headers: { "content-type": "application/json" } });
+    } });
+  });
+  afterEach(async () => {
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    if (fetchBefore) Object.defineProperty(globalThis, "fetch", fetchBefore); else delete (globalThis as { fetch?: unknown }).fetch;
+    if (actBefore) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", actBefore); else delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: unknown }).IS_REACT_ACT_ENVIRONMENT;
+  });
+
+  it("reads the devices again when the step changes, and when it is enabled again", async () => {
+    function Probe({ enabled, again }: { enabled: boolean; again: string }) { name = useOtherDevice(enabled, again); return null; }
+    await act(async () => { renderer = create(createElement(Probe, { enabled: true, again: "phone" })); });
+    expect(reads).toBe(1);
+    expect(name).toBe("Pixel 9");
+    await act(async () => { renderer!.update(createElement(Probe, { enabled: true, again: "done" })); });
+    expect(reads).toBe(2);
+    // Settings open over the guide: no read; closed: read again
+    await act(async () => { renderer!.update(createElement(Probe, { enabled: false, again: "done" })); });
+    expect(reads).toBe(2);
+    await act(async () => { renderer!.update(createElement(Probe, { enabled: true, again: "done" })); });
+    expect(reads).toBe(3);
   });
 });
