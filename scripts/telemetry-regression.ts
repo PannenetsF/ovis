@@ -185,7 +185,8 @@ export async function checkTelemetrySettings(browser: Browser): Promise<void> {
     assert.equal(updatedPreview.settings?.palette, "charcoal", "the preview refreshes with the server's updated snapshot");
     // a newer app's snapshot, herdr theme ids and both theme sides, is taken as it is; an unknown id is not
     const themed: TelemetrySettings = { ...updatedPreview.settings!, palette: "tokyo-night", darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" };
-    const postSettings = (settings: unknown) => fetch(`${origin}/api/telemetry`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ settings }) });
+    // a page tells its settings with the counting generation it heard: the server keeps none from before an off it missed
+    const postSettings = async (settings: unknown) => fetch(`${origin}/api/telemetry`, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ settings, generation: (await statusAt(origin)).counts_generation }) });
     assert.equal((await postSettings(themed)).status, 200, "the server takes a snapshot with herdr theme ids and the theme keys");
     assert.deepEqual((await statusAt(origin)).next?.settings, themed);
     assert.equal((await postSettings({ ...themed, palette: "not-a-theme" })).status, 400, "the server refuses an unknown theme id");

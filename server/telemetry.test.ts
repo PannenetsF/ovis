@@ -252,7 +252,7 @@ describe("telemetry events", () => {
     await telemetry.report();
     expect(sent).toEqual([]);
 
-    telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION, settings });
+    telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION, settings, generation: 0 });
     await telemetry.report();
     expect(sent).toHaveLength(1);
     expect(sent[0]!.settings).toEqual(settings);
@@ -269,7 +269,7 @@ describe("telemetry events", () => {
 
     const latestSettings = settingsSnapshot({ theme: "system", terminalFontSize: 16 });
     const latestBrowser = setup({ stateDir });
-    latestBrowser.telemetry.change({ settings: latestSettings });
+    latestBrowser.telemetry.change({ settings: latestSettings, generation: 0 });
     await latestBrowser.telemetry.report();
     expect(latestBrowser.sent).toEqual([]);
 
@@ -283,7 +283,7 @@ describe("telemetry events", () => {
     const { telemetry, sent, stateDir, clock } = setup({ grace: 600_000 });
     const safe = settingsSnapshot();
     const submitted = { ...safe };
-    telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION, settings: submitted });
+    telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION, settings: submitted, generation: 0 });
     submitted.theme = "light";
     const preview = telemetry.status().next?.settings;
     expect(preview).toEqual(safe);
@@ -301,7 +301,7 @@ describe("telemetry events", () => {
     clock.now += 600_001;
     await telemetry.report();
     expect(sent).toHaveLength(1);
-    telemetry.change({ settings: settingsSnapshot({ theme: "light" }) });
+    telemetry.change({ settings: settingsSnapshot({ theme: "light" }), generation: 0 });
     await telemetry.report();
     expect(sent).toHaveLength(1);
     expect(telemetry.status().next).toBeNull();
@@ -519,7 +519,7 @@ describe("daily active message", () => {
     // 0.4.0 was reported; this server runs 0.4.1, so an update is owed
     writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: true, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: NOTICE_VERSION, reported_version: "0.4.0", settings: null, active: [], usage_after_notice: true, counts: [] }));
     const { telemetry, sent } = setup({ stateDir, status: 503 });
-    expect((await handleTelemetryRequest(telemetryPost({ settings: settingsSnapshot({ theme: "light" }) }), telemetry)).status).toBe(200);
+    expect((await handleTelemetryRequest(telemetryPost({ settings: settingsSnapshot({ theme: "light" }), generation: 0 }), telemetry)).status).toBe(200);
     expect(telemetry.status().next).toMatchObject({ event: "update", previous_version: "0.4.0", settings: settingsSnapshot({ theme: "light" }) });
     expect((await handleTelemetryRequest(telemetryPost({ enabled: false }), telemetry)).status).toBe(200);
     expect((await handleTelemetryRequest(telemetryPost({ enabled: true }), telemetry)).status).toBe(200);
@@ -628,7 +628,7 @@ describe("daily active message", () => {
     writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: true, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: NOTICE_VERSION, reported_version: "0.4.0", settings: settingsSnapshot({ theme: "dark" }), active: [], usage_after_notice: true, counts: [] }));
     const { telemetry, sent } = setup({ stateDir });
     expect(telemetry.status().next).toMatchObject({ event: "update", previous_version: "0.4.0", settings: null });
-    telemetry.change({ settings: settingsSnapshot({ theme: "light" }) });
+    telemetry.change({ settings: settingsSnapshot({ theme: "light" }), generation: 0 });
     await telemetry.report();
     expect(sent.at(-1)).toMatchObject({ event: "update", settings: settingsSnapshot({ theme: "light" }) });
   });
@@ -706,6 +706,23 @@ describe("daily active message", () => {
     const errors = spyOn(console, "error").mockImplementation(() => {});
     try { setup({ stateDir, env: { DO_NOT_TRACK: "1" } }); } finally { errors.mockRestore(); }
     expect(existsSync(join(stateDir, "telemetry.json"))).toBe(false);
+  });
+
+  test("settings told with a generation from before an off the page did not hear are not kept, nor any that name none", async () => {
+    const { telemetry, stateDir } = setup({ grace: 600_000 });
+    seen(telemetry);
+    expect(telemetry.status().counts_generation).toBe(0);
+    // another page turns the counts off and on while this page's request is on its way
+    telemetry.change({ enabled: false });
+    telemetry.change({ enabled: true });
+    expect((await handleTelemetryRequest(telemetryPost({ settings: settingsSnapshot({ theme: "light" }), generation: 0 }), telemetry)).status).toBe(200);
+    expect((await handleTelemetryRequest(telemetryPost({ settings: settingsSnapshot({ theme: "light" }) }), telemetry)).status).toBe(200);
+    expect(savedFile(stateDir).settings).toBeNull();
+    // told with the generation as it is now: kept
+    const now = telemetry.status().counts_generation;
+    expect((await handleTelemetryRequest(telemetryPost({ settings: settingsSnapshot({ theme: "light" }), generation: now }), telemetry)).status).toBe(200);
+    expect(savedFile(stateDir).settings).toEqual(settingsSnapshot({ theme: "light" }));
+    expect((await handleTelemetryRequest(telemetryPost({ settings: settingsSnapshot(), generation: -1 }), telemetry)).status).toBe(400);
   });
 
   test("(k) an install that was never visited sends no active message", async () => {
@@ -1306,7 +1323,7 @@ describe("/api/telemetry", () => {
     expect(sent).toEqual([]);
 
     // on again, with the page's settings told in the same body: kept, and the install event carries them
-    const enabled = await handleTelemetryRequest(post({ enabled: true, settings }), telemetry);
+    const enabled = await handleTelemetryRequest(post({ enabled: true, settings, generation: 1 }), telemetry);
     expect(await enabled.json()).toMatchObject({ enabled: true, next: { settings } });
     expect(JSON.stringify(telemetry.status())).not.toContain("private font name");
     expect(JSON.stringify(telemetry.status())).not.toContain("private reply");

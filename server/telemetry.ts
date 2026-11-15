@@ -45,7 +45,7 @@ const VISITS_NOTICE_VERSION = 4;
  * src/lib/usageCounters.ts), so what was pressed in the day's last minute has arrived when the day is sent
  */
 export const COUNTS_SETTLE_MS = 5 * 60_000;
-const TELEMETRY_CHANGE_KEYS = new Set(["enabled", "notice_seen", "notice_version", "settings", "alert_opened", "counts"]);
+const TELEMETRY_CHANGE_KEYS = new Set(["enabled", "notice_seen", "notice_version", "settings", "alert_opened", "counts", "generation"]);
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 /** today's usage (its kinds of screen and ways in as much as its counts) changes on the wire at most this often, and only with a
  * visit: a resend for a new kind of agent in between carries the usage already sent, so no message tells when a count changed */
@@ -254,6 +254,10 @@ function telemetryChange(value: unknown): TelemetryChange | null {
         case "alert_opened":
           if (descriptor.value !== true) return null;
           clean.alert_opened = true;
+          break;
+        case "generation":
+          if (typeof descriptor.value !== "number" || !Number.isSafeInteger(descriptor.value) || descriptor.value < 0) return null;
+          clean.generation = descriptor.value;
           break;
         case "counts": {
           const counts = telemetryCountsChange(descriptor.value);
@@ -512,6 +516,8 @@ export class Telemetry {
     // even if OFF_FILE cannot be written
     if (clean.enabled === false) { this.abort?.abort(); this.activeAbort?.abort(); this.countsAbort?.abort(); }
     this.refresh();
+    // the counter as the request found it: settings told with the generation the page heard last are from now
+    const heard = this.saved.forgotten;
     // off is marked before FILE is written, whatever another server writes to FILE meanwhile
     if (clean.enabled === false) this.markOff();
     // nothing kept before an off is sent after it: the off, and an on after an off (one another server marked), drop every
@@ -523,7 +529,9 @@ export class Telemetry {
     if (clean.notice_seen && this.saved.notice_seen_at === null) this.saved.notice_seen_at = new Date(this.now()).toISOString();
     // kept for the next install/update event, only once the notice that names it was seen (the page sends it with its
     // acknowledgement) and while the counts are on; telling it sends nothing by itself
-    if (clean.settings !== undefined && this.saved.notice_seen_at !== null && this.saved.enabled && !this.blocked()) this.saved.settings = clean.settings;
+    // a request that names no generation, or one from before an off the page had not heard, keeps none: they may be from
+    // before it (a request delayed while another page turned the counts off and on)
+    if (clean.settings !== undefined && clean.generation === heard && this.saved.notice_seen_at !== null && this.saved.enabled && !this.blocked()) this.saved.settings = clean.settings;
     this.persist();
     // and again after: an on from another server between the two writes cannot leave this off without its mark
     if (clean.enabled === false) this.markOff();

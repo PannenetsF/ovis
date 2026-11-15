@@ -100,6 +100,11 @@ export interface TelemetryChange {
   notice_seen?: true;
   notice_version?: number;
   settings?: TelemetrySettings;
+  /**
+   * with `settings`: the counting generation (TelemetryStatus.counts_generation) the page last heard. Settings told
+   * from before an off it did not hear are not kept
+   */
+  generation?: number;
   /** a pane alert was tapped (public/sw.js): counted in today's `alerts_opened`, and nothing else */
   alert_opened?: true;
   /** what a browser used since it last told: added to today's counts (TelemetryCounts). A server before it answers 400 */

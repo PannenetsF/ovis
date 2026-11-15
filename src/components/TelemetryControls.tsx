@@ -20,6 +20,10 @@ import { SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
  * over the page would otherwise cover: the sentence still opens Settings and Turn off is still there; the
  * welcome itself goes, so it has no close of its own.
  */
+
+/** the counting generation the page heard, sent with its settings: the server keeps none told from before an off it did not hear */
+const heardGeneration = (status: TelemetryStatus | null | undefined): { generation?: number } =>
+  status?.counts_generation === undefined ? {} : { generation: status.counts_generation };
 export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: boolean; onOpen: () => void; inline?: boolean }) {
   const t = useT();
   const [shown, setShown] = useState(false);
@@ -43,6 +47,8 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
   // an event may go out, so an install that is off, blocked or has not seen the notice keeps its
   // settings to itself. The first snapshot rides with the acknowledgement below.
   const [status, setStatus] = useState<TelemetryStatus | null>(null);
+  const statusRef = useRef(status);
+  statusRef.current = status;
   // Turn off in any copy on this page is every copy's: the others hide and tell the server nothing more
   const [, offHeard] = useState(0);
   useEffect(() => {
@@ -54,7 +60,7 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
   useEffect(() => {
     if (!enabled || !allowed || submittedSettingsSignature.current === settingsSignature) return;
     submittedSettingsSignature.current = settingsSignature;
-    changeTelemetry({ settings: settingsSnapshot }).then((next) => { if (!turnedOff.current) setStatus(next); }, (error: unknown) => {
+    changeTelemetry({ settings: settingsSnapshot, ...heardGeneration(status) }).then((next) => { if (!turnedOff.current) setStatus(next); }, (error: unknown) => {
       if (!(error instanceof ApiError && error.status === 404)) console.error("telemetry settings", error);
     });
   }, [enabled, allowed, settingsSignature, settingsSnapshot]);
@@ -95,6 +101,7 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
         notice_seen: true,
         notice_version: NOTICE_VERSION,
         settings: snapshot,
+        ...heardGeneration(statusRef.current),
       }).then((next) => { submittedSettingsSignature.current = JSON.stringify(snapshot); if (!turnedOff.current) setStatus(next); },
         // a failed record is tried again on the next paint, return to the tab or focus (#3882)
         (error: unknown) => {
@@ -201,7 +208,7 @@ export function TelemetryControls() {
         setStatus(current);
         return;
       }
-      return changeTelemetry({ settings: snapshot }).then((next) => {
+      return changeTelemetry({ settings: snapshot, ...heardGeneration(current) }).then((next) => {
         if (!live || request !== statusRequest.current) return;
         setStatus(next);
       });
@@ -224,7 +231,7 @@ export function TelemetryControls() {
     setSaving(true);
     setError(null);
     // turned on, the switch brings the snapshot the browser kept to itself while it was off
-    changeTelemetry(enabled ? { enabled, settings: settingsSnapshotRef.current } : { enabled }).then(
+    changeTelemetry(enabled ? { enabled, settings: settingsSnapshotRef.current, ...heardGeneration(status) } : { enabled }).then(
       (next) => {
         if (request === statusRequest.current) setStatus(next);
         // counts turned on again in Settings: a line turned off from the page may show again (#3882)
