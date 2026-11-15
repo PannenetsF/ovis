@@ -328,7 +328,7 @@ function readSaved(file: string, offFile: string): Saved | null {
       forgotten: typeof value["forgotten"] === "number" && Number.isSafeInteger(value["forgotten"]) && value["forgotten"] >= 0 ? value["forgotten"] : 0,
       visits_after_notice: true,
       // an older build kept a snapshot told before its notice too: one from a file without the mark waits for a page to tell it again
-      settings: seenVersion >= SETTINGS_NOTICE_VERSION && value["visits_after_notice"] === true ? telemetrySettings(value["settings"]) : null,
+      settings: on && seenVersion >= SETTINGS_NOTICE_VERSION && value["visits_after_notice"] === true ? telemetrySettings(value["settings"]) : null,
       active: !on ? [] : noticeSeenAt !== null && value["usage_after_notice"] === true ? active : withoutUsage(active),
       usage_after_notice: true,
       // counted only once the current notice was shown: a file whose notice is older keeps none

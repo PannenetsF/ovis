@@ -734,6 +734,15 @@ describe("daily active message", () => {
     expect(savedFile(stateDir)).toMatchObject({ enabled: false, active: [], counts: [], settings: null });
   });
 
+  test("a marked file left off with a snapshot (a stop between the mark and the cleaned write) holds none after one start", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+    dirs.push(stateDir);
+    writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: true, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: NOTICE_VERSION, reported_version: "0.4.1", replaced_forgotten: false, forgotten: 0, visits_after_notice: true, settings: settingsSnapshot(), usage_after_notice: true, active: [], counts: [] }));
+    writeFileSync(join(stateDir, "telemetry-off"), "");
+    setup({ stateDir });
+    expect(savedFile(stateDir)).toMatchObject({ settings: null, active: [], counts: [] });
+  });
+
   test("(k) an install that was never visited sends no active message", async () => {
     const { telemetry, actives, sent } = setup();
     seen(telemetry);
