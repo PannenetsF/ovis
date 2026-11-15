@@ -133,7 +133,7 @@ last browser or phone that opened it into its anonymous usage counts, which it s
 developer's telemetry Worker (`server/telemetry.ts`, stored by `telemetry/worker.ts`). They are on
 by default (opt-out), start only after the client has shown its notice, and stop when turned off
 under Settings > About > Anonymous usage counts (in the app or on the PC), or with
-`OVIS_TELEMETRY=0` on the PC. They hold a random ID made on the PC, the Ovis version (and the one an update replaced, left out of the first message after an off and on and of a new state's first; later updates name it), the
+`OVIS_TELEMETRY=0` on the PC. They hold a random ID made on the PC, the Ovis version (and the one an update replaced, left out of an update still owed across an off and on or made while off, and of a new state's first message; other updates name it), the
 terminal runtime it serves (herdr or herdr-core), the PC's
 operating system, CPU and install method, the allowlisted settings snapshot (no free-form text,
 paths or account names), the kinds of coding agents running, the kinds of screen the app was opened on and how they reached
