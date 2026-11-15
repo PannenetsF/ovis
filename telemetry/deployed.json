@@ -1,4 +1,4 @@
 {
-  "sha256": "bad9562e63f3231cef5e0de2f366cc835f7287ef5d1d8ac9815bc9a42c586846",
+  "sha256": "4a97c5744e4e8a67243b155189b4db3cd8f2f9e1d29134d95a7bfd9dc42aaed5",
   "about": "sha256 of telemetry/worker.ts + shared/telemetry.ts as last deployed; written by bun scripts/release-guards.ts --worker-deployed after bunx wrangler deploy"
 }
