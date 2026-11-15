@@ -291,6 +291,15 @@ function offMarked(offFile: string): boolean {
   } catch { return true; }
 }
 
+/** whether the file holds rows or a snapshot the state read from it does not keep, or lacks the marks it writes */
+function keptDiffers(file: string, saved: Saved): boolean {
+  try {
+    const value = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+    if (value["visits_after_notice"] !== true) return true;
+    return JSON.stringify([value["active"] ?? [], value["counts"] ?? [], value["settings"] ?? null]) !== JSON.stringify([saved.active, saved.counts, saved.settings]);
+  } catch { return false; }
+}
+
 function readSaved(file: string, offFile: string): Saved | null {
   try {
     const value: unknown = JSON.parse(readFileSync(file, "utf8"));
@@ -307,9 +316,11 @@ function readSaved(file: string, offFile: string): Saved | null {
     // days an older build kept may have been recorded before the notice: only the ones it delivered stay, so none is sent again
     // and a delivered one is cut back to what was delivered of it: what was added since may be from before an off
     const active = seenVersion < VISITS_NOTICE_VERSION ? [] : value["visits_after_notice"] === true ? readActive(value["active"]) : readActive(value["active"]).flatMap((entry) => entry.sent === null ? [] : [{ ...entry, harnesses: [...entry.sent], usage: entry.sent_usage ?? emptyUsage(), sent_usage: entry.sent_usage ?? emptyUsage(), wire_usage: entry.sent_usage ?? emptyUsage() }]);
+    // a file that is off keeps nothing to send: an older build, or a write that failed, may have left rows in it
+    const on = value["enabled"] !== false && !offMarked(offFile);
     return {
       install_id: value["install_id"],
-      enabled: value["enabled"] !== false && !offMarked(offFile),
+      enabled: on,
       notice_seen_at: noticeSeenAt,
       notice_version: NOTICE_VERSION,
       reported_version: typeof value["reported_version"] === "string" ? value["reported_version"] : null,
@@ -318,10 +329,10 @@ function readSaved(file: string, offFile: string): Saved | null {
       visits_after_notice: true,
       // an older build kept a snapshot told before its notice too: one from a file without the mark waits for a page to tell it again
       settings: seenVersion >= SETTINGS_NOTICE_VERSION && value["visits_after_notice"] === true ? telemetrySettings(value["settings"]) : null,
-      active: noticeSeenAt !== null && value["usage_after_notice"] === true ? active : withoutUsage(active),
+      active: !on ? [] : noticeSeenAt !== null && value["usage_after_notice"] === true ? active : withoutUsage(active),
       usage_after_notice: true,
       // counted only once the current notice was shown: a file whose notice is older keeps none
-      counts: noticeSeenAt === null ? [] : readCountDays(value["counts"]),
+      counts: noticeSeenAt === null || !on ? [] : readCountDays(value["counts"]),
     };
   } catch { return null; }
 }
@@ -378,6 +389,12 @@ export class Telemetry {
     // a state made fresh names no version an update replaced: the updater's record of it is from before this file (one a
     // purge removed, or one that never was)
     this.saved = saved ?? { install_id: randomUUID(), enabled: !offMarked(this.offFile), notice_seen_at: null, notice_version: NOTICE_VERSION, reported_version: null, replaced_forgotten: true, forgotten: 0, visits_after_notice: true, settings: null, active: [], usage_after_notice: true, counts: [] };
+    // what was read and not kept (an older build's rows, an off file's) is written away once, so it does not stay on disk
+    if (saved && keptDiffers(this.file, saved)) {
+      try { this.persist(); } catch (error) {
+        console.error(`telemetry: ${this.file} could not be written (${error instanceof Error ? error.message : String(error)})`);
+      }
+    }
     if (!saved) {
       try { this.persist(); } catch (error) {
         // the app still starts; telemetry just stays silent

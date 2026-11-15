@@ -725,6 +725,15 @@ describe("daily active message", () => {
     expect((await handleTelemetryRequest(telemetryPost({ settings: settingsSnapshot(), generation: -1 }), telemetry)).status).toBe(400);
   });
 
+  test("a 0.5.4 file that is off with days and a snapshot holds none of them after one start", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+    dirs.push(stateDir);
+    const day = { day: "2026-10-08", harnesses: ["claude"], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, wire_usage: null, sent_at: null };
+    writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({ install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: false, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: NOTICE_VERSION, reported_version: "0.4.1", settings: settingsSnapshot(), usage_after_notice: true, active: [day], counts: [{ day: "2026-10-08", version: "0.4.1", narrow: null, wide: { counts: { chat_send: 2 }, shown: [] } }] }));
+    setup({ stateDir });
+    expect(savedFile(stateDir)).toMatchObject({ enabled: false, active: [], counts: [], settings: null });
+  });
+
   test("(k) an install that was never visited sends no active message", async () => {
     const { telemetry, actives, sent } = setup();
     seen(telemetry);
