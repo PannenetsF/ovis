@@ -126,7 +126,6 @@ export function FirstStartHints({ active }: { active: boolean }) {
       const box = anchor.getBoundingClientRect();
       if (!anchor.isConnected || box.width === 0 || box.height === 0) { setAnchor(null); setPlace(null); return; }
       setPlace(placeBy(anchor, card.offsetWidth, card.offsetHeight));
-      if (refocus.current) { refocus.current = false; card.querySelector<HTMLButtonElement>(".btn-primary")?.focus(); }
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -135,6 +134,13 @@ export function FirstStartHints({ active }: { active: boolean }) {
     window.addEventListener("resize", measure);
     return () => { observer.disconnect(); window.removeEventListener("resize", measure); };
   }, [shown, anchor, card]);
+
+  // once placed (a card still hidden while it is measured cannot take the focus)
+  useLayoutEffect(() => {
+    if (place === null || card === null || !refocus.current) return;
+    refocus.current = false;
+    card.querySelector<HTMLButtonElement>(".btn-primary")?.focus();
+  }, [place, card]);
 
   if (!shown || anchor === null) return null;
   const hint = hints[step]!;
