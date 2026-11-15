@@ -51,6 +51,7 @@ import { ThemeCard, THEME_NAMES } from "./ThemeCard.tsx";
 import { themeLabel } from "./ThemeFiles.tsx";
 import { repairFailureText } from "./PushHealthNotice.tsx";
 import { inNativeApp } from "../lib/nativeApp.ts";
+import { desktopUpdateBridge } from "../lib/desktopUpdate.ts";
 import { chosenTheme } from "../lib/customThemes.ts";
 import { TelemetryNotice } from "./TelemetryControls.tsx";
 import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
@@ -86,6 +87,8 @@ export interface SetupGuideProps {
   onEnableAlerts: () => Promise<PushActionResult>;
   /** Settings is open over the guide: the paired devices are read again when it closes */
   settingsOpen?: boolean;
+  /** this device has a push subscription (App's pushOn): alerts reach it with no tab open */
+  pushOn?: boolean;
   /** this device's notification permission as App keeps it: it changes with the browser's answer */
   notifications: NotificationState;
   /** Start pressed: a tab the guide asked to show before it is not shown over what Start opens */
@@ -205,7 +208,7 @@ export function SetupGuide(props: SetupGuideProps) {
   const notice = <TelemetryNotice inline enabled={!hidden} onOpen={props.onOpenTelemetry} />;
   let body: ReactNode;
   if (state.step === "welcome") body = <Welcome dispatch={props.dispatch} onClose={onClose} notice={notice} firstFocus={firstFocus} />;
-  else if (view === "agents" && catalog !== null) body = <Steps page={page} setPage={setPage} onEnableAlerts={props.onEnableAlerts} notifications={props.notifications} settingsOpen={props.settingsOpen} catalog={catalog} ready={ready} machineId={machineId} reopened={state.reopened === true} dispatch={props.dispatch} onClose={onClose} onInstalled={agentInstalled} onLookAgain={loadCatalog} onOpenTerminal={props.onOpenTerminal} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} auth={props.auth} security={props.security} onStarting={props.onStarting} onPaired={props.onPaired} usageOn={turnsUsageOn(props.state)} phoneFirst={!phoneClosed && phoneBoxOpensFirst(props.state, isLoopbackHost(window.location.hostname))} onPhoneClosed={() => setPhoneClosed(true)} notice={notice} firstFocus={firstFocus} />;
+  else if (view === "agents" && catalog !== null) body = <Steps page={page} setPage={setPage} onEnableAlerts={props.onEnableAlerts} notifications={props.notifications} settingsOpen={props.settingsOpen} pushOn={props.pushOn} catalog={catalog} ready={ready} machineId={machineId} reopened={state.reopened === true} dispatch={props.dispatch} onClose={onClose} onInstalled={agentInstalled} onLookAgain={loadCatalog} onOpenTerminal={props.onOpenTerminal} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} auth={props.auth} security={props.security} onStarting={props.onStarting} onPaired={props.onPaired} usageOn={turnsUsageOn(props.state)} phoneFirst={!phoneClosed && phoneBoxOpensFirst(props.state, isLoopbackHost(window.location.hostname))} onPhoneClosed={() => setPhoneClosed(true)} notice={notice} firstFocus={firstFocus} />;
   else body = <CheckStep reopened={state.reopened === true} dispatch={props.dispatch} onClose={onClose} notice={notice} firstFocus={firstFocus}>{view === "failed" ? <CheckFailed error={catalogError} onLookAgain={loadCatalog} /> : <Checking known={known} catalog={catalog} />}</CheckStep>;
 
   return (
@@ -349,7 +352,7 @@ function CheckFailed({ error, onLookAgain }: { error: string | null; onLookAgain
   );
 }
 
-interface StepsProps extends Pick<StepState, "page" | "setPage">, Pick<SetupGuideProps, "onEnableAlerts" | "notifications" | "settingsOpen" | "onOpenTerminal" | "onOpened" | "onOpenSettings" | "auth" | "security" | "onStarting" | "onPaired" | "onClose" | "dispatch"> {
+interface StepsProps extends Pick<StepState, "page" | "setPage">, Pick<SetupGuideProps, "onEnableAlerts" | "notifications" | "settingsOpen" | "pushOn" | "onOpenTerminal" | "onOpened" | "onOpenSettings" | "auth" | "security" | "onStarting" | "onPaired" | "onClose" | "dispatch"> {
   /** opened again from Settings: no welcome to go back to */
   reopened: boolean;
   /** the line about usage counts, at the end of the step's column */
@@ -370,7 +373,7 @@ interface StepsProps extends Pick<StepState, "page" | "setPage">, Pick<SetupGuid
 }
 
 /** The agent step and the Done screen: one place keeps the agent picked and what Start did, for both. */
-function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = false, catalog, ready, machineId, reopened, notice, dispatch, onClose, onInstalled, onLookAgain, onOpenTerminal, onOpened, onOpenSettings, auth, security, onStarting, onPaired, usageOn, phoneFirst, onPhoneClosed, firstFocus }: StepsProps) {
+function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = false, pushOn = false, catalog, ready, machineId, reopened, notice, dispatch, onClose, onInstalled, onLookAgain, onOpenTerminal, onOpened, onOpenSettings, auth, security, onStarting, onPaired, usageOn, phoneFirst, onPhoneClosed, firstFocus }: StepsProps) {
   const t = useT();
   const { settings, update } = useSettings();
   const agents = agentRows(catalog, ready);
@@ -487,7 +490,10 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
   // what alerts this computer gets, as Done names them: Settings → Alerts' chips that are on; none while alerts are off or refused
   // Any turn finished takes in the long ones, so the summary names it alone
   const alertKinds = alertMeWhenChips(t, settings, alertFilters, update, true).filter((chip) => chip.on && !(settings.alertDone === "always" && chip.label === t("Long turn finished"))).map((chip) => chip.label);
-  const alertsSummary = settings.alertsOn && notifications === "granted" && alertsFailure === null && alertKinds.length > 0 ? alertKinds.join(", ") : null;
+  // on only where an alert can arrive: a push subscription made, or the desktop app's own notifications; a reload
+  // reads it anew from App, so a failure the step never saw is not shown as on (#3894 review)
+  const alertsReach = alertsReachHere(pushOn);
+  const alertsSummary = settings.alertsOn && notifications === "granted" && alertsReach && alertsFailure === null && alertKinds.length > 0 ? alertKinds.join(", ") : null;
   const usageNote = signedIn.length > 0 && (settings.showUsage || usageOn) && <p className="setup-note"><Gauge aria-hidden="true" />{t("Plan usage will show in the sidebar for your signed-in accounts.")}</p>;
   const errorLine = error !== null && <p className="setup-error" role="alert">{error}</p>;
   const signInDialog = signingIn && <UsageSignInDialog request={signingIn} onOpenTerminal={(paneId) => { setSigningIn(null); onOpenTerminal(paneId); }} onSignedIn={() => setSignedHere((done) => [...done, signingIn.provider])} onClose={() => setSigningIn(null)} />;
@@ -513,7 +519,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
         <div className="setup-main">
           <StepTitle firstFocus={firstFocus}>{t("Stay in touch with your agents")}</StepTitle>
           <p className="setup-lead">{t("Get alerts on this computer. Connect your phone to get them there too.")}</p>
-          <AlertsHere onEnable={onEnableAlerts} notifications={notifications} failure={alertsFailure} onFailure={setAlertsFailure} />
+          <AlertsHere onEnable={onEnableAlerts} notifications={notifications} reaches={alertsReach} failure={alertsFailure} onFailure={setAlertsFailure} />
           {errorLine}
           {notice}
         </div>
@@ -708,7 +714,7 @@ function ThemePreview() {
  * once. The test is the page's own notification, as an open tab of Ovis shows its alerts, so it works in the
  * desktop app too, where web push does not reach; Settings → Alerts' test goes through the push service.
  */
-function AlertsHere({ onEnable, notifications: state, failure, onFailure }: { onEnable: () => Promise<PushActionResult>; notifications: NotificationState; failure: string | null; onFailure: (text: string | null) => void }) {
+function AlertsHere({ onEnable, notifications: state, reaches, failure, onFailure }: { onEnable: () => Promise<PushActionResult>; notifications: NotificationState; reaches: boolean; failure: string | null; onFailure: (text: string | null) => void }) {
   const t = useT();
   const { settings, update } = useSettings();
   const filters = useAlertFilters();
@@ -722,7 +728,7 @@ function AlertsHere({ onEnable, notifications: state, failure, onFailure }: { on
     try {
       const result = await onEnable();
       // still refused: the line says so, rather than the button doing nothing (#3894 review)
-      onFailure(result === "permission" ? t("Allow notifications to test alerts on this device.") : repairFailureText(t, result));
+      onFailure(alertsFailureText(t, result));
     } finally { setBusy(null); }
   };
   const test = async (): Promise<void> => {
@@ -730,7 +736,7 @@ function AlertsHere({ onEnable, notifications: state, failure, onFailure }: { on
     setLine(null);
     try { setLine(await showTestNotification(t("Test alert"), t("This is how an alert from Ovis looks on this computer.")) ? "sent" : "failed"); } finally { setBusy(null); }
   };
-  const on = settings.alertsOn && state === "granted" && failure === null;
+  const on = settings.alertsOn && state === "granted" && reaches && failure === null;
   return (
     <div className="setup-field setup-alerts">
       <span className="setup-label">{t("On this computer")}</span>
@@ -769,6 +775,21 @@ const THEMES_FIRST = 6;
  * now. A pick changes the whole app at once, the dialog and the app behind it, so the app itself is the preview;
  * the side panel shows the chosen theme larger. The theme is a shared setting: every device of this Ovis takes it.
  */
+/** Alerts can arrive here: through this device's push subscription, or as the desktop app's own notifications. */
+export function alertsReachHere(pushOn: boolean): boolean {
+  return pushOn || desktopUpdateBridge() !== null;
+}
+
+/** What Turn on alerts came to, as Settings → Alerts says it; null when alerts are on. */
+function alertsFailureText(t: Translate, result: PushActionResult): string | null {
+  if (result === "sent") return null;
+  if (result === "permission") return t("Allow notifications to test alerts on this device.");
+  if (result === "gone") return t("The push service retired this device's subscription. Turn alerts on again to make a new one.");
+  if (result === "failed") return t("Could not send the test notification. Try again.");
+  if (result === "unsupported") return t("Push alerts need HTTPS or localhost, and on iPhone the home-screen app.");
+  return repairFailureText(t, result) ?? t("Could not send the test notification. Try again.");
+}
+
 /** The theme drawn on a side, by its name: a built-in one's, or an imported one's as Settings names it; null when an imported one is gone. */
 function drawnThemeName(t: Translate, settings: Settings, side: Mode): string | null {
   if (settings.customThemes[side] === null) return t(THEME_NAMES[side === "dark" ? settings.darkTheme : settings.lightTheme]);

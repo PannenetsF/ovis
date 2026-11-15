@@ -16,7 +16,7 @@ import { worktreeRepoName } from "./lib/composerStrip.ts";
 import { AccessGate } from "./components/AccessGate.tsx";
 import { AgentMark } from "./components/AgentMark.tsx";
 import { NewSessionDialog } from "./components/NewSessionDialog.tsx";
-import { SetupGuide, SetupGuideResume } from "./components/SetupGuide.tsx";
+import { alertsReachHere, SetupGuide, SetupGuideResume } from "./components/SetupGuide.tsx";
 import { useOtherDevice, useSetupGuide } from "./lib/useSetupGuide.ts";
 import { armHints } from "./lib/firstHints.ts";
 import { SetupProgressRow } from "./components/SetupProgressRow.tsx";
@@ -368,7 +368,7 @@ export function App() {
   const rowFacts = setupGuide.guide === null && auth?.role !== "watch" && localSnapshot !== null;
   const otherDevicePaired = useOtherDevice(rowFacts, pairedNotices.length);
   const setupRow = rowFacts
-    ? <SetupProgressRow facts={{ workspace: localSnapshot.workspaces.length > 0, phone: otherDevicePaired !== null, alerts: notifications === "unsupported" || (alertsOn && notifications === "granted") }} />
+    ? <SetupProgressRow facts={{ workspace: localSnapshot.workspaces.length > 0, phone: otherDevicePaired !== null, alerts: notifications === "unsupported" || (alertsOn && notifications === "granted" && alertsReachHere(pushOn)) }} />
     : null;
   // the mode's shell. The setup guide stands in the pane's place before any workspace exists: it keeps the classic one
   const inMode = inboxMode.on && !guideShown;
@@ -1341,7 +1341,7 @@ export function App() {
         {/* kept mounted while it steps aside, so a sign-in or a workspace being made goes on where it was; it is this PC's setup */}
         {/* mounted once the guide is gone, so a first run's arming (onOpened, below) is read afresh */}
         {setupGuide.guide === null && <FirstStartHints active={locked === false} />}
-        {setupGuide.guide !== null && <MachineContext.Provider value="local"><SetupGuide auth={auth} security={security} onEnableAlerts={enableNotifications} settingsOpen={settingsOpen} notifications={notifications} hidden={setupGuide.paused} state={setupGuide.guide} dispatch={setupGuide.dispatch} onClose={setupGuide.close} onOpenSettings={(page) => { setSettingsLinkPage(page); setSettingsOpen(true); }}
+        {setupGuide.guide !== null && <MachineContext.Provider value="local"><SetupGuide auth={auth} security={security} onEnableAlerts={enableNotifications} settingsOpen={settingsOpen} pushOn={pushOn} notifications={notifications} hidden={setupGuide.paused} state={setupGuide.guide} dispatch={setupGuide.dispatch} onClose={setupGuide.close} onOpenSettings={(page) => { setSettingsLinkPage(page); setSettingsOpen(true); }}
           onOpenTelemetry={() => { setSettingsLinkPage("about"); setSettingsLinkSection("telemetry"); setSettingsOpen(true); }}
           // the tab was just made: picked before the roster has it, the pick would be released as a closed pane
           // picked once the roster has it: only the latest tab the guide asked for, while it is open, Start
