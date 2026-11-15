@@ -89,7 +89,8 @@ try {
     { width: 1280, height: 720 },
     { width: 390, height: 844, phone: true },
   ] as const;
-  for (const size of sizes) {
+  // SETUP_DIALOG_ONLY=variants: the phone panel variants' block alone (a preview branch; its older phone-step checks follow the variant picked)
+  for (const size of process.env["SETUP_DIALOG_ONLY"] === "variants" ? [] : sizes) {
     for (const theme of ["dark", "light"] as const) {
       const at = `${size.width}x${size.height}-${theme}`;
       const phone = "phone" in size;
@@ -476,6 +477,85 @@ try {
       console.log("PASS the guide's usage-counts line is recorded only in view and uncovered, once, stays with Turn off on the next step, and the page's copy is not drawn under it");
     } finally {
       await context.close();
+    }
+  }
+
+  // The phone panel's two variants (a preview): at both desktop sizes the step's body never scrolls, in every state
+  // (start, each way picked, a QR code shown, the relay's other ways, Tailscale's command or absence, the Wi-Fi line,
+  // each store's QR code, a relay that does not start). The dialog keeps its 16:9 size.
+  for (const variant of ["a", "b"] as const) {
+    for (const size of [{ width: 1920, height: 1080 }, { width: 1280, height: 720 }] as const) {
+      const at = `variant ${variant} ${size.width}x${size.height}`;
+      const open = async (query: string) => {
+        const context = await browser!.newContext({ viewport: size, locale: "en-US", colorScheme: "dark" });
+        await context.addInitScript(([guide, chosen]) => {
+          if (sessionStorage.getItem("seeded") !== null) return;
+          localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
+          localStorage.setItem("ovis:setup-guide", guide);
+          localStorage.setItem("ovis:preview-phone-variant", chosen);
+          sessionStorage.setItem("seeded", "1");
+        }, [WELCOME, variant] as const);
+        const page = await context.newPage();
+        await page.goto(`${root}?demo_devices=empty&demo_via=device${query}`);
+        const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
+        await dialog.getByRole("button", { name: /^I'm new to Ovis/ }).click();
+        for (const heading of ["Pick your coding agent", "Pick a look"]) {
+          await dialog.getByRole("heading", { name: heading, exact: true }).waitFor();
+          await dialog.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+        }
+        await dialog.getByRole("heading", { name: "Stay in touch with your agents", exact: true }).waitFor();
+        return { context, page, side: dialog.locator(".setup-side-phone") };
+      };
+      const fits = async (page: Page, state: string) => {
+        await settled(page);
+        const body = await page.locator(".setup-dialog .setup-body").evaluate((node) => ({ scroll: node.scrollHeight, client: node.clientHeight }));
+        assert.ok(body.scroll <= body.client + 1, `${at}: the step's body does not scroll (${state}): ${JSON.stringify(body)}`);
+        const card = (await page.locator(".setup-dialog").boundingBox())!;
+        assert.ok(Math.abs(card.width / card.height - 16 / 9) < 0.02, `${at}: the dialog stays 16:9 (${state})`);
+      };
+      const pick = (side: ReturnType<Page["locator"]>, name: RegExp) => variant === "a" ? side.getByRole("button", { name }).click() : side.getByRole("tab", { name }).click();
+      {
+        const { context, page, side } = await open("");
+        await fits(page, "start");
+        await pick(side, /^Ovis relay/);
+        await side.getByRole("button", { name: "Turn on the Ovis relay" }).waitFor();
+        await fits(page, "the relay picked");
+        await side.getByRole("button", { name: "Turn on the Ovis relay" }).click();
+        await side.locator(".setup-relay-tight .qr").waitFor();
+        await fits(page, "the relay's QR code");
+        await side.getByRole("button", { name: "Other ways" }).click();
+        await side.getByRole("button", { name: "Show a code to type" }).waitFor();
+        await fits(page, "the relay's other ways");
+        await side.getByRole("button", { name: "Back to the QR code" }).click();
+        await pick(side, /Tailscale/);
+        await side.locator(".setup-qr-panel").waitFor();
+        await fits(page, "Tailscale's QR code");
+        await pick(side, /Same Wi-Fi/);
+        await side.locator(".setup-method-area .setup-note").waitFor();
+        await fits(page, "the Wi-Fi line");
+        for (const store of ["Download on the App Store", "Get it on Google Play"]) {
+          await side.getByRole("button", { name: store }).click();
+          await side.locator(".setup-qr-panel").waitFor();
+          await fits(page, store);
+        }
+        await context.close();
+      }
+      for (const [query, state] of [["&demo_tailscale=command", "Tailscale's command"], ["&demo_tailscale=missing", "Tailscale not installed"]] as const) {
+        const { context, page, side } = await open(query);
+        await pick(side, /Tailscale/);
+        await side.locator(".setup-method-area .setup-method-step, .setup-method-area .setup-note").first().waitFor();
+        await fits(page, state);
+        await context.close();
+      }
+      {
+        const { context, page, side } = await open("&demo_relay_fail=1");
+        await pick(side, /^Ovis relay/);
+        await side.getByRole("button", { name: "Turn on the Ovis relay" }).click();
+        await side.getByRole("alert").first().waitFor();
+        await fits(page, "a relay that did not start");
+        await context.close();
+      }
+      console.log(`PASS the phone step's body does not scroll in any state (${at})`);
     }
   }
 } finally {

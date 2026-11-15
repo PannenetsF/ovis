@@ -530,7 +530,6 @@ function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = fa
       <div className="modal-body setup-body">
         <div className="setup-main">
           <StepTitle firstFocus={firstFocus}>{t("Stay in touch with your agents")}</StepTitle>
-          <p className="setup-lead">{t("Get alerts on this computer. Connect your phone to get them there too.")}</p>
           <AlertsPicture alerts={alerts} phoneName={phoneName} />
           <AlertsHere onEnable={onEnableAlerts} notifications={notifications} alerts={alerts} uncheckable={uncheckable} failure={alertsFailure} onFailure={setAlertsFailure} />
           {errorLine}
@@ -754,7 +753,6 @@ function AlertsHere({ onEnable, notifications: state, alerts, uncheckable, failu
   const on = shown === "send-test";
   return (
     <div className="setup-field setup-alerts">
-      <span className="setup-label">{t("On this computer")}</span>
       {shown === "note" ? <p className="setup-note"><Info aria-hidden="true" />{t("Push alerts need HTTPS or localhost, and on iPhone the home-screen app.")}</p>
         : state === "denied" ? (
           <>
@@ -950,7 +948,7 @@ function PhoneBox({ opening, onWithdraw, auth, security, onOpenSettings, onPaire
  * gate still open, which would shut out a browser in only because nothing is paired yet (auth via
  * "open": a LAN or tailnet address, never the PC's loopback), so that browser pairs itself first.
  */
-function RelayBox({ relay, auth, closesGate, onPaired, onPhonePaired, onOther }: { relay: RelayState; auth: HealthAuth | null; closesGate: boolean; onPaired: () => void; onPhonePaired: (name: string) => void; onOther?: () => void }) {
+function RelayBox({ relay, auth, closesGate, onPaired, onPhonePaired, onOther, tight = false }: { relay: RelayState; auth: HealthAuth | null; closesGate: boolean; onPaired: () => void; onPhonePaired: (name: string) => void; onOther?: () => void; tight?: boolean }) {
   const t = useT();
   const { status, pending, request } = relay;
   const [turning, setTurning] = useState(false);
@@ -979,7 +977,7 @@ function RelayBox({ relay, auth, closesGate, onPaired, onPhonePaired, onOther }:
     <div className="setup-phone-relay">
       {step === "off" && (
         <>
-          <p className="setup-phone-relay-lead">{t("Your phone's camera scans a QR code and reaches this PC from anywhere. End-to-end encrypted, nothing to install.")}</p>
+          {!tight && <p className="setup-phone-relay-lead">{t("Your phone's camera scans a QR code and reaches this PC from anywhere. End-to-end encrypted, nothing to install.")}</p>}
           {closesGate && <p className="setup-muted">{t("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.")}</p>}
           <div className="setup-actions">
             <button type="button" className="btn" disabled={busy} onClick={() => void start()}><Smartphone aria-hidden="true" />{t("Turn on the Ovis relay")}</button>
@@ -995,7 +993,7 @@ function RelayBox({ relay, auth, closesGate, onPaired, onPhonePaired, onOther }:
           </div>
         </>
       )}
-      {step === "online" && <RelayQr onPhonePaired={onPhonePaired} />}
+      {step === "online" && (tight ? <TightRelayQr onPhonePaired={onPhonePaired} /> : <RelayQr onPhonePaired={onPhonePaired} />)}
       {pairedSelf && <span className="setup-paired" role="status"><Check aria-hidden="true" />{t("This browser is paired first: other browsers now need pairing too.")}</span>}
       {/* a failed start's reason shows once, in its own line, when the relay says it did not start; any other failure (a retry's own pairing) shows here */}
       {error !== null && (step !== "not-started" || error !== status.error) && <p className="setup-error" role="alert">{error}</p>}
@@ -1192,16 +1190,31 @@ function QrPanel({ value, label, address, scanLine, children }: { value: string;
   const [copied, setCopied] = useState<boolean | null>(null);
   return (
     <div className="setup-qr-panel">
-      <QrCode value={value} label={label} size={184} />
+      <QrCode value={value} label={label} size={150} />
       <div className="setup-qr-panel-text">
         <p className="setup-qr-scan">{scanLine ?? t("Scan it with your phone's camera and it opens right away.")}</p>
         <div className="setup-qr-address">
           <code>{address}</code>
           <button type="button" className="icon-button" aria-label={t("Copy address")} title={t("Copy address")} onClick={() => void copyText(address).then(setCopied)}><Copy aria-hidden="true" /></button>
         </div>
-        <span className="setup-muted" role="status">{copied === true ? t("Copied") : null}</span>
         {children}
+        <span className="setup-muted" role="status">{copied === true ? t("Copied") : null}</span>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The relay's QR code in the step, tight: the QR code and its one line; New code, a link without a code, a code to
+ * type and this PC's ID wait behind Other ways, which takes the QR code's place rather than making the step taller.
+ */
+function TightRelayQr({ onPhonePaired }: { onPhonePaired: (name: string) => void }) {
+  const t = useT();
+  const [more, setMore] = useState(false);
+  return (
+    <div className={more ? "setup-relay-tight is-more" : "setup-relay-tight"}>
+      <RelayQr onPhonePaired={onPhonePaired} />
+      <button type="button" className="setup-link setup-relay-more" aria-expanded={more} onClick={() => setMore(!more)}>{more ? t("Back to the QR code") : t("Other ways")}</button>
     </div>
   );
 }
@@ -1250,7 +1263,7 @@ function MethodPanel({ method, ...props }: MethodProps & { method: PhoneMethod }
     if (phoneWay(relay, inRelayShell(), props.auth) === "other") return <p className="setup-note"><Info aria-hidden="true" />{t("The Ovis relay is not available on this PC. Use Tailscale or the same Wi-Fi.")}</p>;
     if (relay.status === null) return <p className="setup-muted"><LoaderCircle aria-hidden="true" className="setup-spin" /></p>;
     const closesGate = props.security.state === "known" && props.security.summary.pairing_gate === "open" && !props.security.summary.token_configured;
-    return <RelayBox relay={relay} auth={props.auth} closesGate={closesGate} onPaired={props.onPaired} onPhonePaired={props.onPhonePaired} />;
+    return <RelayBox tight relay={relay} auth={props.auth} closesGate={closesGate} onPaired={props.onPaired} onPhonePaired={props.onPhonePaired} />;
   }
   if (method === "wifi") {
     const address = wifiAddress();
@@ -1295,17 +1308,18 @@ function methodFacts(t: Translate): { id: PhoneMethod; icon: ReactNode; name: st
   ];
 }
 
-/** Variant A: three method buttons side by side, the store badges under them, and one QR area for whichever was pressed. */
+/** Variant A: three compact method buttons in a row, the store badges on one line under them, and one QR area for whichever was pressed. */
 function PhonePanelA(props: MethodProps) {
   const t = useT();
   const [shown, setShown] = useState<PhoneMethod | Store | null>(null);
+  const area = useRef<HTMLDivElement>(null);
+  useShownInView(area, shown);
   return (
     <>
       <div className="setup-methods" role="group" aria-label={t("Ways to connect")}>
         {methodFacts(t).map((method) => (
           <button key={method.id} type="button" className="setup-method" aria-pressed={shown === method.id} onClick={() => setShown(method.id)}>
-            <span className="setup-method-icon">{method.icon}</span>
-            <span className="setup-method-name">{method.name}{method.recommended && <span className="setup-badge">{t("Recommended")}</span>}</span>
+            <span className="setup-method-name">{method.icon}{method.name}{method.recommended && <span className="setup-badge">{t("Recommended")}</span>}</span>
             <span className="setup-method-when">{method.when}</span>
           </button>
         ))}
@@ -1313,9 +1327,9 @@ function PhonePanelA(props: MethodProps) {
       <div className="setup-stores-row">
         <span className="setup-label">{t("Use the app")}</span>
         <StoreBadges shown={shown === "app-store" || shown === "google-play" ? shown : null} onShow={setShown} />
+        <span className="setup-muted">{t("or just the phone's browser")}</span>
       </div>
-      <p className="setup-muted">{t("A phone's browser works too, without the app.")}</p>
-      <div className="setup-method-area">
+      <div className="setup-method-area" ref={area}>
         {shown === null ? <p className="setup-muted">{t("Pick a way above to see its QR code.")}</p>
           : shown === "app-store" || shown === "google-play" ? <StoreQr store={shown} />
           : <MethodPanel key={shown} method={shown} {...props} />}
@@ -1324,50 +1338,52 @@ function PhonePanelA(props: MethodProps) {
   );
 }
 
-/** Variant B: a short numbered path: the app (optional) with both stores' QR codes, the way as tabs, then its QR code. */
+/** On a phone the page scrolls: the QR area a press filled comes into view, its QR code and line with it. */
+function useShownInView(area: React.RefObject<HTMLElement | null>, shown: unknown): void {
+  const narrow = useMediaQuery("(max-width: 640px)");
+  useEffect(() => {
+    if (shown === null || !narrow) return;
+    area.current?.scrollIntoView({ block: "nearest" });
+  }, [shown, narrow]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+/** Variant B: a short numbered path: the app (optional) with its badges on one line, the way as tabs, then its QR code. */
 function PhonePanelB(props: MethodProps) {
   const t = useT();
-  const { settings } = useSettings();
-  const language = settings.language === "system" ? navigator.language : settings.language;
   const [method, setMethod] = useState<PhoneMethod>("relay");
+  const [store, setStore] = useState<Store | null>(null);
   const facts = methodFacts(t);
   const tabs = useRef<(HTMLButtonElement | null)[]>([]);
+  const area = useRef<HTMLDivElement>(null);
+  useShownInView(area, store ?? method);
+  const pick = (next: PhoneMethod): void => { setStore(null); setMethod(next); };
   const onKey = (event: ReactKeyboardEvent, index: number): void => {
     const next = event.key === "ArrowRight" ? (index + 1) % facts.length : event.key === "ArrowLeft" ? (index + facts.length - 1) % facts.length : null;
     if (next === null) return;
     event.preventDefault();
-    setMethod(facts[next]!.id);
+    pick(facts[next]!.id);
     tabs.current[next]?.focus();
   };
   return (
     <ol className="setup-path">
-      <li>
+      <li className="setup-path-row">
         <span className="setup-path-head"><span className="setup-path-num" aria-hidden="true">1</span>{t("Get the app (optional)")}</span>
-        <div className="setup-path-stores">
-          {(["app-store", "google-play"] as const).map((store) => (
-            <a key={store} className="setup-path-store" href={STORES[store].url} target="_blank" rel="noreferrer noopener">
-              <QrCode value={STORES[store].url} label={t("QR code that opens {store}", { store: store === "app-store" ? "App Store" : "Google Play" })} size={96} />
-              <img src={badgeSrc(store, language)} alt={store === "app-store" ? t("Download on the App Store") : t("Get it on Google Play")} width={STORES[store].width} height={STORES[store].height} />
-            </a>
-          ))}
-        </div>
-        <p className="setup-muted">{t("A phone's browser works too, without the app.")}</p>
+        <StoreBadges shown={store} onShow={setStore} />
       </li>
       <li>
         <span className="setup-path-head" id="setup-path-ways"><span className="setup-path-num" aria-hidden="true">2</span>{t("Pick how to connect")}</span>
         <div className="setup-path-tabs" role="tablist" aria-labelledby="setup-path-ways">
           {facts.map((fact, index) => (
-            <button key={fact.id} ref={(node) => { tabs.current[index] = node; }} type="button" role="tab" id={`setup-path-tab-${fact.id}`} aria-selected={method === fact.id} aria-controls="setup-path-panel" tabIndex={method === fact.id ? 0 : -1} className="setup-path-tab" onClick={() => setMethod(fact.id)} onKeyDown={(event) => onKey(event, index)}>
+            <button key={fact.id} ref={(node) => { tabs.current[index] = node; }} type="button" role="tab" id={`setup-path-tab-${fact.id}`} aria-selected={store === null && method === fact.id} aria-controls="setup-path-panel" tabIndex={method === fact.id ? 0 : -1} className="setup-path-tab" onClick={() => pick(fact.id)} onKeyDown={(event) => onKey(event, index)}>
               {fact.icon}<span>{fact.name}</span>{fact.recommended && <span className="setup-badge">{t("Recommended")}</span>}
             </button>
           ))}
         </div>
-        <p className="setup-muted">{facts.find((fact) => fact.id === method)!.when}</p>
       </li>
       <li>
-        <span className="setup-path-head"><span className="setup-path-num" aria-hidden="true">3</span>{t("Scan it with your phone")}</span>
-        <div id="setup-path-panel" role="tabpanel" aria-labelledby={`setup-path-tab-${method}`} className="setup-method-area">
-          <MethodPanel key={method} method={method} {...props} />
+        <span className="setup-path-head"><span className="setup-path-num" aria-hidden="true">3</span>{store === null ? facts.find((fact) => fact.id === method)!.when : t("Scan it with your phone")}</span>
+        <div id="setup-path-panel" role="tabpanel" aria-labelledby={`setup-path-tab-${method}`} className="setup-method-area" ref={area}>
+          {store !== null ? <StoreQr store={store} /> : <MethodPanel key={method} method={method} {...props} />}
         </div>
       </li>
     </ol>
