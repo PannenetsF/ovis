@@ -209,7 +209,7 @@ developer):
 - **On or off**: **on by default (opt-out)**. The switch is under Settings > About > Anonymous
   usage counts, in the PC's browser and in the app alike, next to the exact messages. The PC's
   owner can also block it with `OVIS_TELEMETRY=0` or `DO_NOT_TRACK=1`.
-- **What they hold**: a random ID made on the PC, the Ovis version (and the one an update replaced, absent after an off and on or for a new state), the terminal
+- **What they hold**: a random ID made on the PC, the Ovis version (and the one an update replaced, left out of the first message after an off and on and of a new state's first; later updates name it), the terminal
   runtime it serves (herdr or herdr-core), the PC's operating system and
   CPU type, how Ovis was installed, the allowlisted settings snapshot of the last browser or phone
   that opened it (no free-form text, paths or account names), the kinds of coding agents
