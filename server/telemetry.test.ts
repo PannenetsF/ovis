@@ -6,7 +6,7 @@ import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
 import { ACTIVE_LATE_DAYS, COUNTS_LATE_DAYS, emptyUsage, harnessOf, TELEMETRY_COUNT_MAX, TELEMETRY_HARNESSES, type TelemetryActive, type TelemetryChange, type TelemetryCounts, type TelemetryEvent, type TelemetryRuntime, type TelemetrySettings, type TelemetryUsage } from "../shared/telemetry.ts";
 import { NOTICE_VERSION } from "../shared/telemetry-notice.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot, type Settings } from "../src/lib/settings.ts";
-import { handleTelemetryRequest, installMethod, Telemetry, telemetryBlocked, USAGE_RESEND_MS, visitSurface } from "./telemetry.ts";
+import { COUNTS_SETTLE_MS, handleTelemetryRequest, installMethod, Telemetry, telemetryBlocked, USAGE_RESEND_MS, visitSurface } from "./telemetry.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -1325,6 +1325,97 @@ describe("/api/telemetry", () => {
 });
 
 describe("telemetry counts", () => {
+  test("a day still waiting is not sent once another server on the same state turned the counts off and on again", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+    dirs.push(stateDir);
+    const taken: TelemetryCounts[] = [];
+    let other: Telemetry | null = null;
+    // the first day goes; while its POST is answered, the other server is turned off and on again
+    const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      if (String(url) === TEST_COUNTS_URL) {
+        taken.push(JSON.parse(String(init?.body)));
+        if (taken.length === 1) { other!.change({ enabled: false }); other!.change({ enabled: true }); }
+      }
+      return new Response(null, { status: 204 });
+    }) as typeof globalThis.fetch;
+    const first = setup({ countsOn: true, stateDir, fetch });
+    other = setup({ countsOn: true, stateDir }).telemetry;
+    seen(first.telemetry);
+    first.clock.now = Date.parse("2026-10-06T12:00:00Z");
+    first.telemetry.change({ counts: { width: "wide", add: { chat_send: 1 }, shown: [], generation: 0 } });
+    first.clock.now = Date.parse("2026-10-07T12:00:00Z");
+    first.telemetry.change({ counts: { width: "wide", add: { chat_send: 2 }, shown: [], generation: 0 } });
+    first.clock.now = Date.parse("2026-10-08T12:00:00Z");
+    await first.telemetry.active([]);
+    await settled();
+    expect(taken.map((counts) => counts.day)).toEqual(["2026-10-06"]);
+  });
+  test("a day's counts wait COUNTS_SETTLE_MS after its midnight, so a batch from its last minute still goes with it", async () => {
+    const { telemetry, counts, clock } = setup({ countsOn: true });
+    seen(telemetry);
+    clock.now = Date.parse("2026-11-15T23:59:30Z");
+    telemetry.change({ counts: { width: "wide", add: { chat_send: 2 }, shown: [], generation: 0 } });
+    // another device's visit just after midnight: the day is not sent yet
+    clock.now = Date.parse("2026-11-16T00:00:20Z");
+    await telemetry.active([]);
+    await settled();
+    expect(counts).toEqual([]);
+    // the tab's batch from before midnight arrives within its minute
+    clock.now = Date.parse("2026-11-16T00:00:50Z");
+    telemetry.change({ counts: { width: "wide", add: { chat_send: 1 }, shown: [], generation: 0, day: "2026-11-15" } });
+    clock.now = Date.parse("2026-11-16T00:00:00Z") + COUNTS_SETTLE_MS;
+    await telemetry.active([]);
+    await settled();
+    // 3 in all: the 3-9 bucket (2), where the day sent at the first visit would have said 1-2 (1)
+    expect(counts.map((sent) => [sent.day, sent.wide?.counts])).toEqual([["2026-11-15", { chat_send: 2 }]]);
+  });
+  test("a day still settling at the only visit goes when the settle time ends, with no other visit", async () => {
+    const { telemetry, counts, clock, timers, fireTimer } = setup({ countsOn: true });
+    seen(telemetry);
+    clock.now = Date.parse("2026-11-15T20:00:00Z");
+    telemetry.change({ counts: { width: "wide", add: { chat_send: 1 }, shown: [], generation: 0 } });
+    clock.now = Date.parse("2026-11-16T00:01:00Z");
+    await telemetry.active([]);
+    await settled();
+    expect(counts).toEqual([]);
+    // one flush armed for the end of the settle time, and nothing else comes
+    expect(timers.filter((timer) => !timer.cleared).map((timer) => timer.ms)).toEqual([COUNTS_SETTLE_MS - 60_000]);
+    clock.now = Date.parse("2026-11-16T00:00:00Z") + COUNTS_SETTLE_MS;
+    fireTimer();
+    await settled();
+    expect(counts.map((sent) => sent.day)).toEqual(["2026-11-15"]);
+  });
+  test("a batch for the ended day that arrives after the only visit arms the settle flush too", async () => {
+    const { telemetry, counts, clock, timers, fireTimer } = setup({ countsOn: true });
+    seen(telemetry);
+    // another device visits just after midnight: nothing of the 15th is on the PC yet, so nothing is armed
+    clock.now = Date.parse("2026-11-16T00:00:20Z");
+    await telemetry.active([]);
+    await settled();
+    expect(timers.filter((timer) => !timer.cleared)).toEqual([]);
+    // the tab's batch from 23:59 arrives from its one-minute buffer
+    clock.now = Date.parse("2026-11-16T00:00:50Z");
+    telemetry.change({ counts: { width: "wide", add: { chat_send: 1 }, shown: [], generation: 0, day: "2026-11-15" } });
+    expect(timers.filter((timer) => !timer.cleared).map((timer) => timer.ms)).toEqual([COUNTS_SETTLE_MS - 50_000]);
+    clock.now = Date.parse("2026-11-16T00:00:00Z") + COUNTS_SETTLE_MS;
+    fireTimer();
+    await settled();
+    expect(counts.map((sent) => sent.day)).toEqual(["2026-11-15"]);
+  });
+  test("a batch is counted under the day it names, yesterday or today; any other day is dropped", () => {
+    const { telemetry, clock, stateDir } = setup({ countsOn: true });
+    seen(telemetry);
+    clock.now = Date.parse("2026-11-16T00:00:20Z");
+    const change = (day: string) => telemetry.change({ counts: { width: "wide", add: { chat_send: 1 }, shown: [], generation: 0, day } });
+    change("2026-11-15");
+    change("2026-11-14");
+    change("2026-11-17");
+    expect(telemetry.status().counts?.wide).toBeNull();
+    clock.now = Date.parse("2026-11-15T12:00:00Z");
+    expect(telemetry.status().counts?.wide).toEqual({ counts: { chat_send: 1 }, shown: [] });
+    // only that day was kept: the one before yesterday and the one not yet begun left no day behind
+    expect(savedFile(stateDir).counts.map((entry: { day: string }) => entry.day)).toEqual(["2026-11-15"]);
+  });
   test("a day the receiver took is not sent again when its removal could not be written", async () => {
     const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
     dirs.push(stateDir);
@@ -1336,7 +1427,7 @@ describe("telemetry counts", () => {
     }) as typeof globalThis.fetch;
     const { telemetry, clock } = setup({ countsOn: true, stateDir, fetch });
     seen(telemetry);
-    telemetry.change({ counts: { width: "wide", add: { chat_send: 2 }, shown: [] } });
+    telemetry.change({ counts: { width: "wide", add: { chat_send: 2 }, shown: [], generation: 0 } });
     clock.now += 86_400_000;
     try {
       await telemetry.active([]);
@@ -1347,10 +1438,24 @@ describe("telemetry counts", () => {
     await settled();
     expect(taken).toHaveLength(1);
   });
+  test("a batch counted before an off (another tab's) is dropped; the current generation's is kept", () => {
+    const { telemetry } = setup({ countsOn: true });
+    seen(telemetry);
+    expect(telemetry.status().counts_generation).toBe(0);
+    telemetry.change({ enabled: false });
+    telemetry.change({ enabled: true });
+    // one counter for the visits and the counts: the off and the on after it each raise it
+    expect(telemetry.status().counts_generation).toBe(2);
+    telemetry.change({ counts: { width: "wide", add: { chat_send: 5 }, shown: [], generation: 0 } });
+    telemetry.change({ counts: { width: "wide", add: { chat_send: 1 }, shown: [] } });
+    expect(telemetry.status().counts?.wide).toBeNull();
+    telemetry.change({ counts: { width: "wide", add: { chat_send: 1 }, shown: [], generation: 2 } });
+    expect(telemetry.status().counts?.wide).toEqual({ counts: { chat_send: 1 }, shown: [] });
+  });
   test("POST counts is refused with 400 while this build counts nothing, as before counts existed", async () => {
     const off = setup({ countsOn: false });
     seen(off.telemetry);
-    const post = (telemetry: Telemetry) => handleTelemetryRequest(new Request("http://localhost/api/telemetry", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ counts: { width: "wide", add: { chat_send: 1 }, shown: [] } }) }), telemetry);
+    const post = (telemetry: Telemetry) => handleTelemetryRequest(new Request("http://localhost/api/telemetry", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ counts: { width: "wide", add: { chat_send: 1 }, shown: [], generation: 0 } }) }), telemetry);
     const refused = await post(off.telemetry);
     expect(refused.status).toBe(400);
     expect((await refused.json()).error.code).toBe("invalid_body");
@@ -1361,7 +1466,7 @@ describe("telemetry counts", () => {
   test("the shipped default counts and sends nothing before the notice that says so (version 6)", async () => {
     const { telemetry, counts, clock, stateDir } = setup();
     seen(telemetry);
-    telemetry.change({ counts: { width: "wide", add: { chat_send: 3 }, shown: ["composer"] } });
+    telemetry.change({ counts: { width: "wide", add: { chat_send: 3 }, shown: ["composer"], generation: 0 } });
     clock.now += 86_400_000;
     await telemetry.active([]);
     await settled();
@@ -1372,7 +1477,7 @@ describe("telemetry counts", () => {
   test("off in this build (its notice is below COUNTS_NOTICE_VERSION): nothing is counted, sent or previewed", async () => {
     const { telemetry, counts, clock, stateDir } = setup({ countsOn: false });
     seen(telemetry);
-    telemetry.change({ counts: { width: "narrow", add: { chat_send: 3 }, shown: ["composer"] } });
+    telemetry.change({ counts: { width: "narrow", add: { chat_send: 3 }, shown: ["composer"], generation: 0 } });
     expect(savedFile(stateDir).counts).toEqual([]);
     expect(telemetry.status().counts).toBeUndefined();
     clock.now += 86_400_000;
@@ -1383,7 +1488,7 @@ describe("telemetry counts", () => {
 
   const DAY_MS = 86_400_000;
   const narrow = (add: TelemetryChange["counts"] extends infer C ? C extends { add: infer A } ? A : never : never, shown: ("composer" | "composer_voice" | "view_switch_header")[] = []) =>
-    ({ counts: { width: "narrow", add, shown } }) satisfies TelemetryChange;
+    ({ counts: { width: "narrow", add, shown, generation: 0 } }) satisfies TelemetryChange;
 
   test("nothing used before the current notice is kept, and a browser's counts alone send nothing", async () => {
     const { telemetry, counts, urls, clock } = setup({ countsOn: true });
@@ -1407,7 +1512,7 @@ describe("telemetry counts", () => {
     seen(telemetry);
     telemetry.change(narrow({ chat_send: 2, view_terminal_claude: 3, view_terminal_by_header: 3 }, ["view_switch_header", "composer"]));
     telemetry.change(narrow({ chat_send: 8 }, ["composer"]));
-    telemetry.change({ counts: { width: "wide", add: { composer_voice: 30, inbox_enter: 9 }, shown: ["composer_voice"] } });
+    telemetry.change({ counts: { width: "wide", add: { composer_voice: 30, inbox_enter: 9 }, shown: ["composer_voice"], generation: 0 } });
     // today's counts are exact here and stay here
     expect(savedFile(stateDir).counts[0].narrow.counts).toEqual({ chat_send: 10, view_terminal_by_header: 3, view_terminal_claude: 3 });
     await telemetry.active([]);
@@ -1499,15 +1604,15 @@ describe("telemetry counts", () => {
     const { telemetry } = setup({ countsOn: true });
     seen(telemetry);
     const post = (body: unknown) => handleTelemetryRequest(new Request("http://localhost/api/telemetry", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(body) }), telemetry);
-    const ok = await post({ counts: { width: "wide", add: { chat_send: 2, composer_rewind: 1 }, shown: ["composer", "future_panel"] } });
+    const ok = await post({ counts: { width: "wide", add: { chat_send: 2, composer_rewind: 1 }, shown: ["composer", "future_panel"], generation: 0 } });
     expect(ok.status).toBe(200);
     expect((await ok.json()).counts.wide).toEqual({ counts: { chat_send: 1 }, shown: ["composer"] });
     for (const bad of [
       { counts: { width: "tablet", add: {}, shown: [] } },
-      { counts: { width: "wide", add: { chat_send: 0 }, shown: [] } },
-      { counts: { width: "wide", add: { chat_send: 1.5 }, shown: [] } },
-      { counts: { width: "wide", add: { chat_send: TELEMETRY_COUNT_MAX + 1 }, shown: [] } },
-      { counts: { width: "wide", add: { chat_send: "fix the bug" }, shown: [] } },
+      { counts: { width: "wide", add: { chat_send: 0 }, shown: [], generation: 0 } },
+      { counts: { width: "wide", add: { chat_send: 1.5 }, shown: [], generation: 0 } },
+      { counts: { width: "wide", add: { chat_send: TELEMETRY_COUNT_MAX + 1 }, shown: [], generation: 0 } },
+      { counts: { width: "wide", add: { chat_send: "fix the bug" }, shown: [], generation: 0 } },
       { counts: { width: "wide", add: {}, shown: "composer" } },
       { counts: { width: "wide", add: {}, shown: [], pane: "w1:p1" } },
     ]) expect((await post(bad)).status).toBe(400);

@@ -40,6 +40,11 @@ export const NOTICE_GRACE_MS = 10 * 60_000;
 /** the first notices that named the settings snapshot (3) and the daily visit with the agent kinds (4): shared/telemetry-notice.ts */
 const SETTINGS_NOTICE_VERSION = 3;
 const VISITS_NOTICE_VERSION = 4;
+/**
+ * how long after its UTC midnight a day's counts wait before they go: longer than a page holds a batch (FLUSH_MS in
+ * src/lib/usageCounters.ts), so what was pressed in the day's last minute has arrived when the day is sent
+ */
+export const COUNTS_SETTLE_MS = 5 * 60_000;
 const TELEMETRY_CHANGE_KEYS = new Set(["enabled", "notice_seen", "notice_version", "settings", "alert_opened", "counts"]);
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 /** today's usage (its kinds of screen and ways in as much as its counts) changes on the wire at most this often, and only with a
@@ -171,7 +176,10 @@ interface Saved {
   /** an off came since the last delivered event: the version an update replaced was known before it, so the next
    * install or update event names none */
   replaced_forgotten: boolean;
-  /** how many offs have deleted what was not sent: a visit or a send begun before one does not write or send after it */
+  /**
+   * how many offs have deleted what was not sent: a visit, a send or a browser batch begun before one does not write or
+   * send after it. The browser hears it as TelemetryStatus.counts_generation and names it in each batch
+   */
   forgotten: number;
   /** the visit days in `active` were recorded only after the current notice. A file without it (an older build's) may
    * hold a day recorded before the notice, so its days not yet delivered are dropped when read */
@@ -329,6 +337,8 @@ export class Telemetry {
   /** days the receiver took in this process: never sent again, even if their removal from FILE could not be written */
   private readonly countsDelivered = new Set<string>();
   private countsAbort?: AbortController;
+  /** the one flush armed for the end of COUNTS_SETTLE_MS, when a day has ended but is still settling */
+  private countsTimer?: Timer;
   private readonly file: string;
   private readonly offFile: string;
   /** false when the state file could not be written: then nothing is sent (it could not be remembered) */
@@ -491,7 +501,7 @@ export class Telemetry {
       notice_seen: this.saved.notice_seen_at !== null,
       next: this.pending(),
       active: this.activeMessage(this.saved.active.find((entry) => entry.day === utcDay(this.now()))),
-      ...(this.countsOn() ? { counts: this.countsMessage(utcDay(this.now())) } : {}),
+      ...(this.countsOn() ? { counts: this.countsMessage(utcDay(this.now())), counts_generation: this.saved.forgotten } : {}),
     };
   }
 
@@ -587,7 +597,13 @@ export class Telemetry {
    */
   tallyCounts(change: TelemetryCountsChange): void {
     if (!this.countsOn() || !this.countingUsage()) return;
-    const day = utcDay(this.now());
+    // counted under another generation (before an off, in a tab that did not hear it), or by a page that names none
+    if (change.generation !== this.saved.forgotten) return;
+    // the day the batch was counted on: a batch that went just after midnight is yesterday's; one older, or a day not yet begun, is dropped
+    const today = utcDay(this.now());
+    const yesterday = utcDay(this.now() - 86_400_000);
+    const day = change.day ?? today;
+    if (day !== today && day !== yesterday) return;
     this.prune();
     let entry = this.saved.counts.find((known) => known.day === day);
     if (!entry) {
@@ -605,6 +621,8 @@ export class Telemetry {
     try { this.persist(); } catch (error) {
       console.error(`telemetry: the counts could not be recorded (${message(error)})`);
     }
+    // a batch from before midnight that arrived after the visit that would have armed it: the ended day's flush
+    if (day !== today) this.settleLater();
   }
 
   private countsOn(): boolean { return this.options.countsOn ?? COUNTS_ON; }
@@ -614,7 +632,7 @@ export class Telemetry {
 
   /**
    * Delivers each recorded day that has ended, oldest first, once: a delivered day is forgotten. No sooner than
-   * NOTICE_GRACE_MS after the notice; a failure is logged and tried again at the next start or visit. A day the
+   * COUNTS_SETTLE_MS after the day's end, nor NOTICE_GRACE_MS after the notice; a failure is logged and tried again at the next start or visit. A day the
    * receiver took is also remembered in this process, so one whose removal could not be written is not sent twice
    * while it runs; after a restart such a day is in the file and goes again (the receiver keeps the first message).
    */
@@ -632,9 +650,12 @@ export class Telemetry {
         return Promise.resolve();
       }
     }
-    const today = utcDay(this.now());
-    const due = this.saved.counts.filter((entry) => entry.day < today && !this.countsDelivered.has(entry.day)).map((entry) => this.countsMessage(entry.day));
+    // a day goes once it has ended and COUNTS_SETTLE_MS more have passed, for the batches still on their way
+    const settled = utcDay(this.now() - COUNTS_SETTLE_MS);
+    const due = this.saved.counts.filter((entry) => entry.day < settled && !this.countsDelivered.has(entry.day)).map((entry) => this.countsMessage(entry.day));
+    this.settleLater();
     if (due.length === 0) return Promise.resolve();
+    const generation = this.saved.forgotten;
     const abort = new AbortController();
     this.countsAbort = abort;
     this.countsSending = (async () => {
@@ -642,6 +663,10 @@ export class Telemetry {
         for (const counts of due) {
           // right before it goes: turned off here or by another server on the same state directory meanwhile
           if (abort.signal.aborted || offMarked(this.offFile)) return;
+          // an off and on again meanwhile (by another server on the same state directory) began a new generation and
+          // cleared the days kept: a day from before it is not sent
+          this.refresh();
+          if (!this.saved.enabled || this.saved.forgotten !== generation || !this.saved.counts.some((entry) => entry.day === counts.day)) return;
           try {
             const response = await this.options.fetch(this.options.countsUrl ?? COUNTS_URL, {
               method: "POST",
@@ -669,8 +694,28 @@ export class Telemetry {
     return this.countsSending;
   }
 
+  /**
+   * A day that has ended but is still settling: one flush at the end of the settle time, which checks everything again
+   * (on, notice, generation), so the day does not wait for a start or visit that may not come before it is too old.
+   */
+  private settleLater(): void {
+    const today = utcDay(this.now());
+    const settled = utcDay(this.now() - COUNTS_SETTLE_MS);
+    if (settled === today || !this.saved.counts.some((entry) => entry.day === settled && !this.countsDelivered.has(entry.day))) return;
+    this.countsTimer?.clear();
+    this.countsTimer = this.arm(() => void this.flushCounts(), Date.parse(`${today}T00:00:00Z`) + COUNTS_SETTLE_MS - this.now());
+  }
+
+  /** a timer that does not keep the process alive (options.setTimer in tests) */
+  private arm(fn: () => void, ms: number): Timer {
+    if (this.options.setTimer) return this.options.setTimer(fn, ms);
+    const timer = setTimeout(fn, ms);
+    timer.unref?.();
+    return { clear: () => clearTimeout(timer) };
+  }
+
   start(): void { this.schedule(START_DELAY_MS); }
-  stop(): void { clearTimeout(this.timer); this.abort?.abort(); this.activeTimer?.clear(); this.activeAbort?.abort(); this.countsAbort?.abort(); }
+  stop(): void { clearTimeout(this.timer); this.abort?.abort(); this.activeTimer?.clear(); this.activeAbort?.abort(); this.countsTimer?.clear(); this.countsAbort?.abort(); }
 
   /**
    * A browser visit: records today (the day of this call, even when the agents arrive after
@@ -767,12 +812,7 @@ export class Telemetry {
     const wait = seen + (this.options.noticeGraceMs ?? NOTICE_GRACE_MS) - this.now();
     if (wait > 0) {
       this.activeTimer?.clear();
-      const setTimer = this.options.setTimer ?? ((fn: () => void, ms: number): Timer => {
-        const timer = setTimeout(fn, ms);
-        timer.unref?.();
-        return { clear: () => clearTimeout(timer) };
-      });
-      this.activeTimer = setTimer(() => void this.flushActive(), wait);
+      this.activeTimer = this.arm(() => void this.flushActive(), wait);
       return Promise.resolve();
     }
     if (this.activeSending) { this.activeAgain = true; this.activeAgainVisit ||= visit; return this.activeSending; }

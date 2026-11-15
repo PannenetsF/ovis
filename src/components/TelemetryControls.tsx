@@ -139,7 +139,7 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
       setClosed(false);
     });
   };
-  const text = offFailed ? t("Couldn't turn the counts off. Open Settings to use the switch.") : t("Ovis sends anonymous usage counts to improve it.");
+  const text = offFailed ? t("Couldn't turn the counts off. Open Settings to use the switch.") : t("Button use and other anonymous usage counts are sent to improve Ovis.");
   if (inline) return <p ref={setLine} className="setup-note setup-note-usage" role={offFailed ? "alert" : "status"}>
     <ChartColumn aria-hidden="true" />
     <button type="button" className="setup-link" aria-haspopup="dialog" onClick={onOpen}>{text}</button>
@@ -240,7 +240,7 @@ export function TelemetryControls() {
         ? <SettingsRow label={t("Send anonymous usage counts")} icon={ChartColumn} description={t("Turned off on this PC by OVIS_TELEMETRY=0, DO_NOT_TRACK or a CI environment.")}>
           <span className="settings-fact" role="status">{t("Off")}</span>
         </SettingsRow>
-        : <SettingsRow label={t("Send anonymous usage counts")} icon={ChartColumn} description={t("Once on install and once per update, with the last browser's app settings, and once a day you open the app, with the kinds of coding agents running in herdr (such as claude or codex), the kinds of screen the app was opened on, how they reached this PC, and how many prompt answers were sent and alerts delivered and tapped. Custom fonts, shortcuts and replies are reported only as customization flags or counts, never their text. Account identifiers, terminal content and files are excluded. The receiver stores the country, not the IP address.")}>
+        : <SettingsRow label={t("Send anonymous usage counts")} icon={ChartColumn} description={t("Once on install and once per update, with the last browser's app settings, and once a day you open the app, with the kinds of coding agents running in herdr (such as claude or codex), the kinds of screen the app was opened on, how they reached this PC, and how many prompt answers were sent and alerts delivered and tapped. After each day, how often the app's buttons were used that day (chat sends, the composer's buttons, the agent inbox, and switches between chat and terminal by kind of agent and how) and, for a few actions, whether a button, a menu, a shortcut or the command palette was used, each count only as a rough range, with the list of which of these controls were shown, on narrow and wide screens apart, never what was typed, which pane or what time of day. Custom fonts, shortcuts and replies are reported only as customization flags or counts, never their text. Account identifiers, terminal content and files are excluded. The receiver stores the country, not the IP address.")}>
           <Toggle label={t("Send anonymous usage counts")} checked={status.enabled} onChange={toggle} disabled={saving} />
         </SettingsRow>}
       {error && <p className="settings-item settings-hint" role="alert">{error}</p>}
@@ -251,6 +251,10 @@ export function TelemetryControls() {
           : <p className="settings-hint">{t("This version has already been counted. The next event is sent after an update.")}</p>}
         <p className="settings-hint">{t("Once a day you open the app:")}</p>
         <pre className="update-output">{JSON.stringify(status.active, null, 2)}</pre>
+        {status.counts && <>
+          <p className="settings-hint">{t("After a day has ended:")}</p>
+          <pre className="update-output">{JSON.stringify(status.counts, null, 2)}</pre>
+        </>}
         <p className="settings-hint">{t("The receiver adds the country this message comes from (two letters, such as KR). It does not store the address.")}</p>
         <a className="settings-link" href={FIELDS_HELP} target="_blank" rel="noreferrer">{t("What each field means")}</a>
       </details>
