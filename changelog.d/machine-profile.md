@@ -8,7 +8,7 @@
   `serve.sock` in its state folder, which only that account can open. It does not start on Windows.
   Without `OVIS_PREVIEW=fleet` it says what to set and exits before it touches its state folder.
   A profile starts only on a state folder that is empty or that it marked itself
-  (`machine-profile.json`), not on one another server has written to. An ordinary server started
-  with `OVIS_PREVIEW=fleet` holds a lock file `serve.own` in its state folder (not on Windows) and
-  does not start on a profile's folder; without the preview an ordinary server takes no lock and is
-  not kept off a profile's folder. The machine profile stays a preview.
+  (`machine-profile.json`), not on one another server wrote to before it. An ordinary server
+  started with `OVIS_PREVIEW=fleet` holds a lock file `serve.own` in its state folder (not on
+  Windows) and does not start on a folder a running profile holds; without the preview an ordinary
+  server takes no lock and is not kept off a profile's folder. The machine profile stays a preview.
