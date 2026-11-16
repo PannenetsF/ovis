@@ -275,6 +275,19 @@ export function ownerAccess(access: Access): boolean {
   return access.level === "full" && access.role === "drive" && access.via !== "open" && access.via !== "portal";
 }
 
+/**
+ * The machine profile's whole rule; decideAccess is never asked there. A device through the relay with its
+ * proof is that device. The caller on the owner's socket (`<state folder>/serve.sock`, which the kernel lets
+ * only this account and root connect to) is the local owner, while its Host is exactly `localhost` and no
+ * forwarding or identity header shows a proxy in front of the socket: a forwarder is not the owner. Anybody
+ * else is nobody: no token, device cookie, Tailscale login, Portal identity or open install counts there.
+ */
+export function decideMachineAccess(input: { relayPeer?: DeviceMatch; ownerSocket: boolean; host: string | null; forwarded: boolean }): Access {
+  if (input.relayPeer !== undefined) return { level: "full", via: "relay", role: input.relayPeer.role, device: input.relayPeer };
+  if (input.ownerSocket && input.host === "localhost" && !input.forwarded) return { level: "full", via: "local", role: "drive" };
+  return { level: "none", reason: "pairing_required" };
+}
+
 export function decideAccess(input: AccessInput): Access {
   if (input.relayPeer !== undefined) return { level: "full", via: "relay", role: input.relayPeer.role, device: input.relayPeer };
   if (input.tokenMatched) return { level: "full", via: "token", role: "drive" };
