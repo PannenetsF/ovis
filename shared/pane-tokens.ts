@@ -69,6 +69,18 @@ export function isThreadRole(value: unknown): boolean {
   return typeof value === "string" && asciiLower(value.trim()) === "thread";
 }
 
+/**
+ * Whether herdr-projects filed the pane as one a person drives: `hp_role=coordinator` or
+ * `hp_role=session` (any case, spaces around it ignored). A pane with any other value, or none,
+ * is not one — herdr-projects' strict primary rule (its pf.22), so a hand-started or untagged
+ * pane never becomes a row of its own in the people's part.
+ */
+export function isPrimaryRole(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const role = asciiLower(value.trim());
+  return role === "coordinator" || role === "session";
+}
+
 /** Whether a rule's condition holds for a token's whole value, as herdr's sidebar tests it. */
 export function paneTokenRuleMatches(rule: PaneTokenRule, value: string): boolean {
   if (rule.gt !== undefined || rule.lt !== undefined) {

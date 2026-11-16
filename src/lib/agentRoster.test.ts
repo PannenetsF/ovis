@@ -92,29 +92,70 @@ describe("agent roster", () => {
       const split = splitAgentRows(agentRoster(machines, { byActivity: false, seqs: () => new Map(), pinned: [] }).rest,
         ({ machine, entry }) => machine.state === "connected" ? entry.pane.agent_status : undefined);
       const keys = (rows: AgentRow[]) => rows.map(({ machine, entry }) => `${machine.id}/${entry.pane.pane_id}`);
-      return { people: keys(split.people), threads: keys(split.threads), background: keys(split.background) };
+      return { people: keys(split.people), threads: keys(split.threads), background: keys(split.background), hidden: keys(split.hidden) };
     };
 
     it("moves hp_role=thread panes, and the helpers they started, to the threads part in their order", () => {
       // hp_role is matched in any case, with the spaces around it ignored, as role=background is
       const machines = [machine("local", "connected", [["a", "idle"], ["t1", "working", undefined, thread], ["h", "working", "t1"], ["b", "working"], ["t2", "done", undefined, { hp_role: " Thread " }]])];
-      expect(parts(machines)).toEqual({ people: ["local/a", "local/b"], threads: ["local/t1", "local/h", "local/t2"], background: [] });
+      expect(parts(machines)).toEqual({ people: ["local/a", "local/b"], threads: ["local/t1", "local/h", "local/t2"], background: [], hidden: [] });
     });
 
     it("keeps a thread that needs the reader with the people's rows, as a background one is kept", () => {
       const machines = [machine("local", "connected", [["a", "idle"], ["t1", "blocked", undefined, thread], ["t2", "working", undefined, thread]])];
-      expect(parts(machines)).toEqual({ people: ["local/a", "local/t1"], threads: ["local/t2"], background: [] });
+      expect(parts(machines)).toEqual({ people: ["local/a", "local/t1"], threads: ["local/t2"], background: [], hidden: [] });
     });
 
     it("reads role=background before hp_role, so a pane tagged both stands with the background agents", () => {
       const machines = [machine("local", "connected", [["a", "idle"], ["x", "working", undefined, { role: "background", hp_role: "thread" }]])];
-      expect(parts(machines)).toEqual({ people: ["local/a"], threads: [], background: ["local/x"] });
+      expect(parts(machines)).toEqual({ people: ["local/a"], threads: [], background: ["local/x"], hidden: [] });
     });
 
     it("takes a row whose own tokens name no role from the first tagged agent above it", () => {
       // a coordinator-tagged pane's helper is a person's row; a thread's helper is a thread
       const machines = [machine("local", "connected", [["c", "idle", undefined, { hp_role: "coordinator" }], ["h1", "working", "c"], ["t", "working", undefined, thread], ["h2", "working", "t"]])];
-      expect(parts(machines)).toEqual({ people: ["local/c", "local/h1"], threads: ["local/t", "local/h2"], background: [] });
+      expect(parts(machines)).toEqual({ people: ["local/c", "local/h1"], threads: ["local/t", "local/h2"], background: [], hidden: [] });
+    });
+  });
+
+  describe("under herdr-projects' strict primary rule", () => {
+    const thread = { hp_role: "thread" };
+    const parts = (machines: Machine[]) => {
+      const split = splitAgentRows(agentRoster(machines, { byActivity: false, seqs: () => new Map(), pinned: [] }).rest,
+        ({ machine, entry }) => machine.state === "connected" ? entry.pane.agent_status : undefined);
+      const keys = (rows: AgentRow[]) => rows.map(({ machine, entry }) => `${machine.id}/${entry.pane.pane_id}`);
+      return { people: keys(split.people), threads: keys(split.threads), background: keys(split.background), hidden: keys(split.hidden) };
+    };
+
+    it("keeps coordinator and session, and hides every other role herdr-projects names", () => {
+      const machines = [machine("local", "connected", [
+        ["c", "idle", undefined, { hp_role: "coordinator" }],
+        ["s", "working", undefined, { hp_role: " Session " }],
+        ["o", "working", undefined, { hp_role: "other" }],
+        ["g", "idle", undefined, { hp_role: "guest" }],
+        ["n", "working", undefined, { hp_role: "something-new" }],
+      ])];
+      expect(parts(machines)).toEqual({ people: ["local/c", "local/s"], threads: [], background: [], hidden: ["local/o", "local/g", "local/n"] });
+    });
+
+    it("hides a helper of a pane that is itself hidden", () => {
+      const machines = [machine("local", "connected", [["c", "idle", undefined, { hp_role: "coordinator" }], ["o", "working", undefined, { hp_role: "other" }], ["h", "working", "o"]])];
+      expect(parts(machines)).toEqual({ people: ["local/c"], threads: [], background: [], hidden: ["local/o", "local/h"] });
+    });
+
+    it("leaves an untagged pane alone, since it was never herdr-projects' to file", () => {
+      const machines = [machine("local", "connected", [["a", "idle"], ["b", "working"], ["o", "idle", undefined, { hp_role: "other" }]])];
+      expect(parts(machines)).toEqual({ people: ["local/a", "local/b"], threads: [], background: [], hidden: ["local/o"] });
+    });
+
+    it("keeps a hidden pane that needs the reader with the people's rows, as the other parts do", () => {
+      const machines = [machine("local", "connected", [["a", "idle", undefined, { hp_role: "coordinator" }], ["o", "blocked", undefined, { hp_role: "other" }]])];
+      expect(parts(machines)).toEqual({ people: ["local/a", "local/o"], threads: [], background: [], hidden: [] });
+    });
+
+    it("reads role=background and hp_role=thread before hiding, so neither is dropped", () => {
+      const machines = [machine("local", "connected", [["a", "idle", undefined, { hp_role: "coordinator" }], ["t", "working", undefined, thread], ["w", "working", undefined, { role: "background" }]])];
+      expect(parts(machines)).toEqual({ people: ["local/a"], threads: ["local/t"], background: ["local/w"], hidden: [] });
     });
   });
 

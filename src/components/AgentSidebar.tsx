@@ -344,10 +344,11 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const kept = ({ machine, entry }: AgentRow): boolean => machineFilter(filter, machine.id)?.panes.has(entry.pane.pane_id) === true;
     return { pinned: roster.pinned.filter(kept), rest: roster.rest.filter(kept) };
   }, [roster, filter]);
-  const rows = useMemo(() => [...split.pinned, ...split.rest], [split]);
   // herdr-projects' threads (panes tagged hp_role=thread) and background agents (a pane tagged role=background, and its
-  // helpers) stand apart, after the rest (lib/agentRoster.ts)
+  // helpers) stand apart, after the rest (lib/agentRoster.ts); a pane tagged with any other role is off the list
   const parts = useMemo(() => splitAgentRows(split.rest, ({ machine, entry }) => machine.state === "connected" ? activity.status(machine.id, entry.pane) : undefined, allRows), [split, activity, allRows]);
+  // the rows the list draws: the pinned card and the three parts, never the ones off the list
+  const rows = useMemo(() => [...split.pinned, ...parts.people, ...parts.threads, ...parts.background], [split, parts]);
   const rowStatus = useCallback(({ machine, entry }: AgentRow) => machine.state === "connected" ? activity.status(machine.id, entry.pane) : undefined, [activity]);
   // Settings → Group agents by state (this device): the unpinned rows in groups, needs-you first (lib/agentRoster.ts)
   const byState = useCallback((list: readonly AgentRow[]) => groupAgentRows(list, {
@@ -834,7 +835,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   // Settings -> Sidebar rows -> One line: an agent row is one line too, its place dim after its title
   const oneLine = settings.sidebarRows === "one";
   // the folded list still says how many of its agents wait for the reader (G-016), in the head's own words
-  const waiting = allRows.filter((row) => rowStatus(row) === "blocked").length;
+  const waiting = rows.filter((row) => rowStatus(row) === "blocked").length;
   return <section ref={sectionRef} onPointerEnter={() => setPointerIn(true)} onPointerLeave={() => setPointerIn(false)} onTouchEnd={holdAfterTouch} onTouchCancel={holdAfterTouch} onFocus={(event) => { setFocusIn(true); heldFocus.current = event.target; }} onBlur={(event) => { forgetFocus(event.target); if (!(typeof Node === "function" && event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setFocusIn(false); }} className={`agents-sidebar${folded ? " is-collapsed" : ""}${rows.length === 0 ? " is-empty" : ""}${oneLine ? " is-one-line is-compact" : ""}`} aria-label={t("Agents")}>
     <button type="button" className="agent-section-toggle sidebar-section-label" aria-expanded={!folded} aria-controls={listId} onClick={() => {
       // the filter's fold lasts for the filter's time and is never kept; the reader's own is
@@ -846,7 +847,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
       <span>{t("Agents")}</span>
       {folded && waiting > 0 && <span className="agent-section-waiting">{t("{count} need you", { count: waiting })}</span>}
       {/* the count is of the agents running, filter or not, open or folded */}
-      {allRows.length > 0 && !compact && <span className="agent-section-count">{allRows.length}</span>}
+      {rows.length > 0 && !compact && <span className="agent-section-count">{rows.length}</span>}
     </button>
     <div ref={listRef} className="agent-list-contents" id={listId} hidden={folded}>
       <p className={shownEmpty === null ? "visually-hidden" : "agent-empty"} role="status">{shownEmpty}</p>
