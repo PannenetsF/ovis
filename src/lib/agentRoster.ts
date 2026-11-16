@@ -4,7 +4,7 @@
  * for it (lib/sidebarOrder.ts). A row is its PC and its pane: two PCs may reuse a pane id.
  */
 import type { Machine } from "../../shared/machines.ts";
-import { isBackgroundRole, isPrimaryRole, isThreadRole, PROJECT_ROLE_TOKEN, ROLE_TOKEN } from "../../shared/pane-tokens.ts";
+import { isBackgroundRole, isPrimaryRole, isThreadRole, isThreadSessionKind, PROJECT_ROLE_TOKEN, ROLE_TOKEN, SESSION_KIND_TOKEN } from "../../shared/pane-tokens.ts";
 import { sidebarAgents, type SidebarAgent } from "./sidebarAgents.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import type { AgentGroupSort } from "./settings.ts";
@@ -90,11 +90,14 @@ export function isBackgroundAgent({ pane, agent }: SidebarAgent): boolean {
 
 /**
  * Whether herdr-projects filed the pane as a thread: `hp_role=thread` (any case, spaces around it
- * ignored), a follow-up a coordinator or session pane started. Nothing is guessed: a pane without
- * the token is a primary row.
+ * ignored), a follow-up a coordinator or session pane started. A pane started without an
+ * `hp_role` at all falls back to the coarser `dn_session` stamp herdr-projects also writes, whose
+ * `thread` means the same thing; `manual` and no stamp at all are the person's own rows.
  */
 export function isThreadAgent({ pane, agent }: SidebarAgent): boolean {
-  return isThreadRole((pane.tokens ?? agent?.tokens)?.[PROJECT_ROLE_TOKEN]);
+  const tokens = pane.tokens ?? agent?.tokens;
+  if (isThreadRole(tokens?.[PROJECT_ROLE_TOKEN])) return true;
+  return tokens?.[PROJECT_ROLE_TOKEN] == null && isThreadSessionKind(tokens?.[SESSION_KIND_TOKEN]);
 }
 
 /** Which part of the list a row stands in: the people's rows, their threads, the background agents, or off the list. */

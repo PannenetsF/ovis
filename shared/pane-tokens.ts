@@ -81,6 +81,18 @@ export function isPrimaryRole(value: unknown): boolean {
   return role === "coordinator" || role === "session";
 }
 
+/**
+ * The coarser stamp herdr-projects also writes: `dn_session` is `thread` for a follow-up and
+ * `manual` for a pane a person opened. Older or hand-driven panes carry this without an
+ * `hp_role`, so it is a fallback when deciding a pane's part, never an override of `hp_role`.
+ */
+export const SESSION_KIND_TOKEN = "dn_session";
+
+/** Whether the coarse `dn_session` stamp says this pane is a thread. */
+export function isThreadSessionKind(value: unknown): boolean {
+  return typeof value === "string" && asciiLower(value.trim()) === "thread";
+}
+
 /** Whether a rule's condition holds for a token's whole value, as herdr's sidebar tests it. */
 export function paneTokenRuleMatches(rule: PaneTokenRule, value: string): boolean {
   if (rule.gt !== undefined || rule.lt !== undefined) {

@@ -10,7 +10,7 @@ const templatePane = template.panes.find((pane) => pane.agent) ?? template.panes
 const workspace = template.workspaces[0]!;
 
 /** a PC whose agents are the named panes, in that order, each with its own status */
-function machine(id: string, state: MachineState, panes: [id: string, status: AgentStatus, parent?: string, tokens?: Record<string, string>][]): Machine {
+function machine(id: string, state: MachineState, panes: [id: string, status: AgentStatus, parent?: string, tokens?: Record<string, string | null>][]): Machine {
   const snapshot: SessionSnapshot = {
     ...template,
     panes: panes.map(([pane_id, agent_status, parent, tokens]): HerdrPane => ({ ...templatePane, pane_id, agent_status, workspace_id: workspace.workspace_id, agent: "claude", background_wait: undefined, tokens: tokens ?? {}, ...(parent ? { parent_pane_id: parent } : {}) })),
@@ -115,6 +115,17 @@ describe("agent roster", () => {
       // a coordinator-tagged pane's helper is a person's row; a thread's helper is a thread
       const machines = [machine("local", "connected", [["c", "idle", undefined, { hp_role: "coordinator" }], ["h1", "working", "c"], ["t", "working", undefined, thread], ["h2", "working", "t"]])];
       expect(parts(machines)).toEqual({ people: ["local/c", "local/h1"], threads: ["local/t", "local/h2"], background: [], hidden: [] });
+    });
+
+    it("falls back to dn_session=thread for a pane started without any hp_role", () => {
+      // a hand-driven herdr carries only the coarse stamp: thread is a follow-up, manual a person's own pane
+      const machines = [machine("local", "connected", [["a", "idle", undefined, { dn_session: "manual" }], ["t1", "working", undefined, { dn_session: "thread" }], ["h", "working", "t1"], ["u", "done", undefined, { dn_session: null }], ["t2", "working", undefined, { dn_session: " Thread " }]])];
+      expect(parts(machines)).toEqual({ people: ["local/a", "local/u"], threads: ["local/t1", "local/h", "local/t2"], background: [], hidden: [] });
+    });
+
+    it("lets hp_role decide, never dn_session, when both are stamped", () => {
+      const machines = [machine("local", "connected", [["c", "idle", undefined, { hp_role: "coordinator", dn_session: "thread" }], ["t", "working", undefined, { hp_role: "thread", dn_session: "manual" }]])];
+      expect(parts(machines)).toEqual({ people: ["local/c"], threads: ["local/t"], background: [], hidden: [] });
     });
   });
 
