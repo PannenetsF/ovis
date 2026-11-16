@@ -17,6 +17,8 @@ export const SIDEBAR_JA: Record<string, string> = {
   "Pinned": "固定済み",
   "Background agents": "バックグラウンドのエージェント",
   "+{n} background": "+{n} バックグラウンド",
+  "Threads": "スレッド",
+  "+{n} threads": "+{n} スレッド",
   "+{n} resting": "+{n} 休止中",
   "Background workspaces": "バックグラウンドのワークスペース",
   "Helpers": "ヘルパー",

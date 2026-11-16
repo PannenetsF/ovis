@@ -17,6 +17,8 @@ export const SIDEBAR_KO: Record<string, string> = {
   "Pinned": "고정됨",
   "Background agents": "백그라운드 에이전트",
   "+{n} background": "+{n} 백그라운드",
+  "Threads": "스레드",
+  "+{n} threads": "+{n} 스레드",
   "+{n} resting": "+{n} 쉬는 중",
   "Background workspaces": "백그라운드 워크스페이스",
   "Helpers": "도우미",

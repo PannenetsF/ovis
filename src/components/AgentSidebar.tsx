@@ -9,7 +9,7 @@ import { currentAgentRowTokens, subscribeAgentRowTokens } from "../lib/agentRowT
 import { useT } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { useEdgeFades } from "../lib/useEdgeFades.ts";
-import { AGENT_GROUPS, agentGroup, agentRoster, groupAgentRows, splitBackgroundRows, type AgentGroup, type AgentRow } from "../lib/agentRoster.ts";
+import { AGENT_GROUPS, agentGroup, agentRoster, groupAgentRows, splitAgentRows, type AgentGroup, type AgentRow } from "../lib/agentRoster.ts";
 import { stampState, stateSince } from "../lib/agentStateSince.ts";
 import { useAgentStateStamps } from "../lib/useAgentStateSince.ts";
 import { knownStatus } from "../lib/status.ts";
@@ -216,6 +216,9 @@ const RESTING_OPEN_KEY = "ovis:agents-resting-open";
 /** the fold of the background agents' part, kept the same way; it starts folded on every screen */
 const BACKGROUND_FOLD_KEY = "ovis:agents-background-collapsed";
 
+/** the fold of the threads' part (herdr-projects' `hp_role=thread` rows), kept the same way; it starts folded on every screen */
+const THREADS_FOLD_KEY = "ovis:agents-threads-collapsed";
+
 /** Settings → Fold helpers under their agent: the agents whose helpers this device lists in full, each by its pin key; every other agent's start folded */
 const HELPERS_OPEN_KEY = "ovis:agents-helpers-open";
 
@@ -271,6 +274,14 @@ function initialBackgroundFold(): boolean {
   }
 }
 
+function initialThreadsFold(): boolean {
+  try {
+    return window.localStorage.getItem(THREADS_FOLD_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
 /** the fold the reader left on this device, or with none kept the screen's: folded in the drawer, open on a desktop */
 function initialFold(): boolean {
   try {
@@ -307,6 +318,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const listId = givenListId ?? ownListId;
   const [collapsed, setCollapsed] = useState(initialFold);
   const [backgroundCollapsed, setBackgroundCollapsed] = useState(initialBackgroundFold);
+  const [threadsCollapsed, setThreadsCollapsed] = useState(initialThreadsFold);
   const { settings, update: updateSettings } = useSettings();
   const pressPane = useContext(PanePressContext);
   // shared with the other browsers of this server (lib/preferencesSync.ts)
@@ -333,8 +345,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     return { pinned: roster.pinned.filter(kept), rest: roster.rest.filter(kept) };
   }, [roster, filter]);
   const rows = useMemo(() => [...split.pinned, ...split.rest], [split]);
-  // background agents (a pane tagged role=background, and its helpers) stand apart, after the rest (lib/agentRoster.ts)
-  const parts = useMemo(() => splitBackgroundRows(split.rest, ({ machine, entry }) => machine.state === "connected" ? activity.status(machine.id, entry.pane) : undefined, allRows), [split, activity, allRows]);
+  // herdr-projects' threads (panes tagged hp_role=thread) and background agents (a pane tagged role=background, and its
+  // helpers) stand apart, after the rest (lib/agentRoster.ts)
+  const parts = useMemo(() => splitAgentRows(split.rest, ({ machine, entry }) => machine.state === "connected" ? activity.status(machine.id, entry.pane) : undefined, allRows), [split, activity, allRows]);
   const rowStatus = useCallback(({ machine, entry }: AgentRow) => machine.state === "connected" ? activity.status(machine.id, entry.pane) : undefined, [activity]);
   // Settings → Group agents by state (this device): the unpinned rows in groups, needs-you first (lib/agentRoster.ts)
   const byState = useCallback((list: readonly AgentRow[]) => groupAgentRows(list, {
@@ -405,6 +418,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const [filterFold, setFilterFold] = useState<boolean | null>(null);
   // the background part opens for the filter's time the same way: a match in it is seen
   const [backgroundFilterFold, setBackgroundFilterFold] = useState<boolean | null>(null);
+  // the threads' part, kept the same way
+  const [threadsFilterFold, setThreadsFilterFold] = useState<boolean | null>(null);
   // and the one-line list's resting fold: a resting agent the filter matched is seen, not only kept (a filter
   // that hid its own matches would say "no match" with the match a fold away)
   const [restingFilterOpen, setRestingFilterOpen] = useState<boolean | null>(null);
@@ -412,10 +427,12 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     if (filter.active) return;
     setFilterFold(null);
     setBackgroundFilterFold(null);
+    setThreadsFilterFold(null);
     setRestingFilterOpen(null);
   }, [filter.active]);
   const folded = filter.active ? filterFold ?? (collapsed && rows.length === 0) : collapsed;
   const backgroundFolded = filter.active ? backgroundFilterFold ?? false : backgroundCollapsed;
+  const threadsFolded = filter.active ? threadsFilterFold ?? false : threadsCollapsed;
   const restingShown = filter.active ? restingFilterOpen ?? true : restingOpen;
   // the times tick only while the list is open and a row has one to draw. The clock stands still meanwhile, so it is
   // set as its updates start again, before the list is painted: an opened list says its times as of now, where the
@@ -584,7 +601,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     // each agent row with the helpers drawn right under it, and the helpers its fold hides
     const helpersOf = new Map<AgentRow, AgentRow[]>();
     const foldedHelpers = new Set<AgentRow>();
-    for (const list of [...named ? named.map((group) => group.rows) : groups ? groups.map((group) => group.rows) : [people], parts.background]) {
+    for (const list of [...named ? named.map((group) => group.rows) : groups ? groups.map((group) => group.rows) : [people], parts.threads, parts.background]) {
       const listDepths = depths(list);
       for (const [row, depth] of listDepths) restDepths.set(row, depth);
       if (foldHelpers) {
@@ -731,7 +748,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   // the group the open row is drawn in, and the one it was put in itself (a helper may only follow its agent's)
   const menuGroup = menuRow === undefined || groupNames.length === 0 ? null : rowAgentGroup(menuRow, settings.agentGroupOf, groupNames, allRows);
   // a background agent stays in its own part (whatever its state), so it is offered no group
-  const menuBackground = menuRow !== undefined && groupNames.length > 0 && splitBackgroundRows([menuRow], () => undefined, allRows).background.length > 0;
+  const menuBackground = menuRow !== undefined && groupNames.length > 0 && (() => { const part = splitAgentRows([menuRow], () => undefined, allRows); return part.background.length + part.threads.length > 0; })();
   const menuOwnGroup = menu === null ? undefined : settings.agentGroupOf[menu.key];
   const setGroup = (key: string, name: string | null): void => {
     // as the pins: the groups of panes gone from a loaded PC leave with this change, and no other PC's
@@ -839,9 +856,23 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
           <ul className="agent-list agent-list-pinned sidebar-pinned" aria-label={t("Pinned")}>{split.pinned.map((row) => agentItem(row))}</ul>
         </>}
         {/* one list, so a row that changes groups or parts is moved, not drawn anew: its focus and open menu stay with it */}
-        {(parts.people.length > 0 || parts.background.length > 0) && <ul className={`agent-list${groups || named ? " agent-list-grouped" : ""}`}>
+        {(parts.people.length > 0 || parts.threads.length > 0 || parts.background.length > 0) && <ul className={`agent-list${groups || named ? " agent-list-grouped" : ""}`}>
           {/* one array of children: React moves a keyed row only among the siblings of its own array */}
           {[...peopleItems,
+          ...parts.threads.length === 0 ? [] : [
+            <li className="agent-background-label" key="threads">
+              <button type="button" className="agent-background-toggle" aria-expanded={!threadsFolded} onClick={() => {
+                if (filter.active) { setThreadsFilterFold(!threadsFolded); return; }
+                setThreadsCollapsed(!threadsCollapsed);
+                try { window.localStorage.setItem(THREADS_FOLD_KEY, threadsCollapsed ? "0" : "1"); } catch { /* private mode: this page keeps it */ }
+              }}>
+                {threadsFolded ? <ChevronRight className="agent-section-caret" aria-hidden="true" /> : <ChevronDown className="agent-section-caret" aria-hidden="true" />}
+                {compact ? <span>{t("+{n} threads", { n: parts.threads.length })}</span>
+                  : <><span>{t("Threads")}</span><span className="agent-section-count">{parts.threads.length}</span></>}
+              </button>
+            </li>,
+            ...listItems(parts.threads, threadsFolded),
+          ],
           ...parts.background.length === 0 ? [] : [
             <li className="agent-background-label" key="background">
               <button type="button" className="agent-background-toggle" aria-expanded={!backgroundFolded} onClick={() => {

@@ -4,7 +4,7 @@
  * for it (lib/sidebarOrder.ts). A row is its PC and its pane: two PCs may reuse a pane id.
  */
 import type { Machine } from "../../shared/machines.ts";
-import { isBackgroundRole, ROLE_TOKEN } from "../../shared/pane-tokens.ts";
+import { isBackgroundRole, isThreadRole, PROJECT_ROLE_TOKEN, ROLE_TOKEN } from "../../shared/pane-tokens.ts";
 import { sidebarAgents, type SidebarAgent } from "./sidebarAgents.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import type { AgentGroupSort } from "./settings.ts";
@@ -89,30 +89,46 @@ export function isBackgroundAgent({ pane, agent }: SidebarAgent): boolean {
 }
 
 /**
- * The list's unpinned rows split into the agents a person drives and the background ones (workers,
- * subagents), each in the order given. A background row is one tagged `role=background`, or a
- * helper started (herdr-core's `parent_pane_id`) by one, looked up in `all` (the whole roster); a
- * blocked one stays with the people's rows, so a question is never folded away.
+ * Whether herdr-projects filed the pane as a thread: `hp_role=thread` (any case, spaces around it
+ * ignored), a follow-up a coordinator or session pane started. Nothing is guessed: a pane without
+ * the token is a primary row.
  */
-export function splitBackgroundRows(rows: readonly AgentRow[], status: (row: AgentRow) => AgentStatus | undefined, all: readonly AgentRow[] = rows): { people: AgentRow[]; background: AgentRow[] } {
+export function isThreadAgent({ pane, agent }: SidebarAgent): boolean {
+  return isThreadRole((pane.tokens ?? agent?.tokens)?.[PROJECT_ROLE_TOKEN]);
+}
+
+/** Which part of the list a row stands in: the people's rows, their threads, or the background agents. */
+export type AgentPart = "people" | "threads" | "background";
+
+/**
+ * The list's unpinned rows split into the agents a person drives, the threads herdr-projects filed
+ * under them, and the background ones (workers, subagents), each in the order given. A row takes
+ * the part its own tag names, or the part of the first tagged agent up its `parent_pane_id` chain,
+ * looked up in `all` (the whole roster); `role=background` is read before `hp_role`. A blocked row
+ * stays with the people's rows, so a question is never folded away.
+ */
+export function splitAgentRows(rows: readonly AgentRow[], status: (row: AgentRow) => AgentStatus | undefined, all: readonly AgentRow[] = rows): Record<AgentPart, AgentRow[]> {
   // a helper's agent is looked up among every row, pinned or filtered out ones too
   const byKey = new Map(all.map((row) => [sidebarPinKey(row.machine.id, row.entry.pane.pane_id), row]));
-  const tagged = (row: AgentRow): boolean => {
+  const partOf = (row: AgentRow): AgentPart | null => {
     // up the helpers chain to the first tagged row; a loop ends the walk
     const passed = new Set<AgentRow>();
     for (let up: AgentRow | undefined = row; up && !passed.has(up); up = up.entry.pane.parent_pane_id === undefined ? undefined : byKey.get(sidebarPinKey(up.machine.id, up.entry.pane.parent_pane_id))) {
-      if (isBackgroundAgent(up.entry)) return true;
+      if (isBackgroundAgent(up.entry)) return "background";
+      if (isThreadAgent(up.entry)) return "threads";
       passed.add(up);
     }
-    return false;
+    return null;
   };
-  const people: AgentRow[] = [];
-  const background: AgentRow[] = [];
-  for (const row of rows) (tagged(row) && knownStatus(status(row)) !== "blocked" ? background : people).push(row);
-  // each part is laid out anew: a helper whose agent went to the other part stands as a root, not under another row
+  const parts: Record<AgentPart, AgentRow[]> = { people: [], threads: [], background: [] };
+  for (const row of rows) {
+    const part = partOf(row);
+    parts[part !== null && knownStatus(status(row)) !== "blocked" ? part : "people"].push(row);
+  }
+  // each part is laid out anew: a helper whose agent went to another part stands as a root, not under another row
   const keyOf = ({ machine, entry }: AgentRow): string => sidebarPinKey(machine.id, entry.pane.pane_id);
   const nest = (part: AgentRow[]): AgentRow[] => nestRows(part, keyOf, ({ machine, entry }) => entry.pane.parent_pane_id === undefined ? undefined : sidebarPinKey(machine.id, entry.pane.parent_pane_id));
-  return { people: nest(people), background: nest(background) };
+  return { people: nest(parts.people), threads: nest(parts.threads), background: nest(parts.background) };
 }
 
 /** Settings → Group agents by state: the groups, in the order the list draws them */

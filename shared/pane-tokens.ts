@@ -57,6 +57,18 @@ export function isBackgroundRole(value: unknown): boolean {
   return typeof value === "string" && asciiLower(value.trim()) === "background";
 }
 
+/**
+ * The token herdr-projects stamps on every pane it starts: `hp_role` is `coordinator` or `session`
+ * for a pane a person drives, and `thread` for a follow-up a coordinator or session started. Kept
+ * apart from `role`, whose `background` value herdr's own launchers set.
+ */
+export const PROJECT_ROLE_TOKEN = "hp_role";
+
+/** Whether herdr-projects files a pane as a thread (a follow-up of a primary pane). */
+export function isThreadRole(value: unknown): boolean {
+  return typeof value === "string" && asciiLower(value.trim()) === "thread";
+}
+
 /** Whether a rule's condition holds for a token's whole value, as herdr's sidebar tests it. */
 export function paneTokenRuleMatches(rule: PaneTokenRule, value: string): boolean {
   if (rule.gt !== undefined || rule.lt !== undefined) {
