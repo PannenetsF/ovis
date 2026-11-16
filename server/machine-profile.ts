@@ -7,8 +7,8 @@ import { type Dirent, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirS
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { harmlessGroups, trustRefusal } from "./herdr-core/discovery.ts";
-import { chosenHerdrSocketStatus, discoverHerdrSessions, validHerdrSocket } from "./herdr-discovery.ts";
-import { herdrSocketPath, ping } from "./herdr/client.ts";
+import { discoverHerdrSessions, heldHerdrSocketStatus, type HerdrSocketPlace, pinnedHerdrSocketStatus, validHerdrSocket } from "./herdr-discovery.ts";
+import { checkHerdrSockets, herdrSocketPath, ping } from "./herdr/client.ts";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { acquireOwnerDirectory, holdForLife, liveOwner, OwnerGuardBusy } from "./owner-guard.ts";
 import { writePrivateState } from "./private-state.ts";
@@ -23,6 +23,21 @@ export class MachineProfileError extends Error {}
 export function ownerSocketPath(stateDir: string): string { return join(stateDir, "serve.sock"); }
 /** The longest socket path served: a longer one Bun would listen on, while curl's --unix-socket cannot reach it. */
 const SOCKET_PATH_MAX = 100;
+/**
+ * The profile's mark in a state folder it took empty (`{"profile":"machine"}`, mode 0600): the one sign that a
+ * folder holding anything is its own, since an ordinary server without the preview takes no hold there.
+ */
+const MARKER = "machine-profile.json";
+
+function markedByProfile(path: string): boolean {
+  try {
+    const marker: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return isJsonObject(marker) && marker.profile === "machine";
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof Error && "code" in error) return false;
+    throw error;
+  }
+}
 
 /** Read the selection without invoking runtime discovery, hc, a login shell or any core connection. */
 export function machineEngine(stateDir: string, port: number): string {
@@ -69,10 +84,13 @@ function walkedStateDir(told: string): string {
 /**
  * A lease per canonical state folder, across checkouts and ports of the machine profile. Never on a
  * folder the ordinary server uses by default, one whose path another account could change, nor one an
- * Ovis's supervisor or an ordinary server holds: a second responder there would answer with that Ovis's
- * relay key. Nothing is written before these are ruled out. The state folder is held exclusively for the
- * life of the process (`serve.own`, which an ordinary server holds shared), and its owner's socket is
- * `serve.sock` in it.
+ * Ovis's supervisor or an ordinary server started with the same preview holds: a second responder there
+ * would answer with that Ovis's relay key. Nothing is written before these are ruled out. The state folder
+ * is held exclusively for the life of the process (`serve.own`, which an ordinary server holds shared when
+ * it runs with OVIS_PREVIEW=fleet, and not at all without it), and its owner's socket is `serve.sock` in it.
+ * The folder is the profile's own: it was empty when the profile first held it and marked it (MARKER), as
+ * it holds nothing else. Another server's files there and no mark refuse it: a server without a hold would
+ * keep its own copy of the paired devices beside the profile's.
  */
 export function claimServerState(told: string | undefined) {
   const own = "name a folder of its own with OVIS_STATE_DIR";
@@ -93,6 +111,13 @@ export function claimServerState(told: string | undefined) {
     const holder = id.isDirectory() ? liveOwner(join(updates, id.name, "supervisor.lock")) : null;
     if (holder !== null) throw new MachineProfileError(`An Ovis already runs on this state folder (${holder}), so no second server was started; ${own}`);
   }
+  const marker = join(stateDir, MARKER);
+  // `serve.own` alone is what a start killed between its hold and its mark leaves; a holder of it refuses below
+  const entries = readdirSync(stateDir).filter((name) => name !== "serve.own");
+  const marked = entries.includes(MARKER) && markedByProfile(marker);
+  if (!marked && entries.length > 0) {
+    throw new MachineProfileError(`The state folder ${stateDir} holds files that are not the machine profile's and no ${MARKER}, so no server was started; name an empty folder or the profile's own with OVIS_STATE_DIR`);
+  }
   const running = "Another server already owns this Ovis state directory, so no second server was started";
   const hold = join(stateDir, "serve.own");
   try { holdForLife(hold, "exclusive"); }
@@ -100,6 +125,7 @@ export function claimServerState(told: string | undefined) {
     if (error instanceof OwnerGuardBusy) throw new MachineProfileError(`${running} (${hold} is held)`);
     throw new MachineProfileError(`The machine profile cannot hold its state folder, so no server was started (${error instanceof Error ? error.message : String(error)})`);
   }
+  if (!marked) writePrivateState(marker, { profile: "machine" });
   const lease = acquireOwnerDirectory(join(stateDir, "serve.lock"), {
     running,
     starting: "Another server is claiming this Ovis state directory, so no second server was started",
@@ -118,8 +144,34 @@ export function machineHerdrBinary(): string {
   return `herdr binary: ${Bun.which("herdr") ?? "herdr, not found"} (from PATH)`;
 }
 
-/** Pin a safe classic session once. An absent explicit socket stays selected for its return. */
+/**
+ * The refusal of a selected socket, whose start tools match on, and after it the walk's own reason when there is
+ * one, for the owner: the folder of this path that another account could change, and how (its mode, owner or group).
+ */
+const unsafeSocket = (reason: string | null | undefined) => `The selected herdr socket cannot be used safely by this account${reason ? `: ${reason}` : ""}`;
+/** Why the classic engine is down as machineSocket last found (null once a session is pinned), and where the pinned socket must stay. */
+let engineRefusal: string | null = null;
+let pinnedPlace: HerdrSocketPlace | null = null;
+/** Discovery again while no session was selected and none or several ran; the next health check runs it. */
+let rediscovery: (() => Promise<string | null>) | null = null;
+let rediscovering: Promise<void> | null = null;
+
+/**
+ * Pin a safe classic session once. An absent explicit socket stays selected for its return where no other
+ * account can put one, and every connection to it is checked first (checkHerdrSockets).
+ */
 export async function machineSocket(stateDir: string, engine: string): Promise<string | null> {
+  engineRefusal = await selectSocket(stateDir, engine);
+  return engineRefusal;
+}
+
+/** Why the engine is down for health: while no session was selected, discovery runs again first and pins the one session it finds. */
+export async function machineSocketRefusal(): Promise<string | null> {
+  if (rediscovery) await (rediscovering ??= rediscovery().then((found) => { engineRefusal = found; }).finally(() => { rediscovering = null; }));
+  return engineRefusal;
+}
+
+async function selectSocket(stateDir: string, engine: string): Promise<string | null> {
   const unavailable = join(stateDir, "unavailable", "herdr.sock");
   if (engine !== "herdr") { process.env["HERDR_SOCKET"] = unavailable; return `${engine} is not supported for a machine yet`; }
   const named = process.env["HERDR_REMOTE_SESSION"];
@@ -128,12 +180,24 @@ export async function machineSocket(stateDir: string, engine: string): Promise<s
   process.env["HERDR_SOCKET"] = unavailable;
   if (named && !/^[A-Za-z0-9_-]{1,64}$/.test(named)) return "HERDR_REMOTE_SESSION must name a herdr session";
   if (selected && !validHerdrSocket(selected)) return `${socket ? "HERDR_REMOTE_SOCKET" : named ? "HERDR_REMOTE_SESSION" : "HERDR_SOCKET"} must be an absolute path ending in /herdr.sock`;
-  if (!selected) {
-    const found = await discoverHerdrSessions();
-    if (found.length !== 1) return found.length === 0 ? "herdr is not running for the selected session" : "Several herdr sessions are running; select one with HERDR_REMOTE_SOCKET";
-    selected = found[0]?.socket_path;
-  }
-  if (!selected || await chosenHerdrSocketStatus(selected) === "refused") return "The selected herdr socket cannot be used safely by this account";
+  return selected ? pinned(selected, unavailable) : discovered(unavailable);
+}
+
+async function discovered(unavailable: string): Promise<string | null> {
+  const found = await discoverHerdrSessions();
+  const refusal = found.length !== 1 ? found.length === 0 ? "herdr is not running for the selected session" : "Several herdr sessions are running; select one with HERDR_REMOTE_SOCKET"
+    : await pinned(found[0]!.socket_path, unavailable);
+  // looked for again until one session is pinned, also when the one found was refused
+  rediscovery = refusal === null ? null : () => discovered(unavailable);
+  return refusal;
+}
+
+async function pinned(selected: string, unavailable: string): Promise<string | null> {
+  const { status, place, reason } = await pinnedHerdrSocketStatus(selected);
+  // the walk's reason reaches the owner in serve()'s "Machine engine" line and in its health answer
+  if (status === "refused") return unsafeSocket(reason);
+  pinnedPlace = place;
+  checkHerdrSockets((path) => heldHerdrSocketStatus(path, place) === "usable" ? path : unavailable);
   process.env["HERDR_SOCKET"] = selected;
   return null;
 }
@@ -148,7 +212,8 @@ export async function machineHealth(engine: string, refusal: string | null = eng
       if (herdr.protocol < 22) reason = "herdr protocol 22 or newer is required; update herdr explicitly";
     } catch (error) {
       if (!(error instanceof Error)) throw error;
-      reason = `${engine} is not running for the selected session`;
+      const path = herdrSocketPath();
+      reason = pinnedPlace && heldHerdrSocketStatus(path, pinnedPlace) === "refused" ? unsafeSocket(pinnedPlace.walk(dirname(path))) : `${engine} is not running for the selected session`;
     }
   }
   return { machine_profile: { engine, runtime_down: reason !== null, reason }, ...(herdr ? { herdr } : {}) };

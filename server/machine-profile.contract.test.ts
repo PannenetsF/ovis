@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "bun:test";
+import { afterEach, expect, it as test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -11,6 +11,12 @@ import { RelayService } from "./relay/service.ts";
 import { bounded, deferred } from "./relay/test-helpers.ts";
 import { updateStateDir } from "./update-state.ts";
 
+/**
+ * serve() refuses the machine profile on Windows (its owner's door is a unix socket in a folder only this
+ * account may enter): every case here runs a profile or compares a server with one, so all are skipped there,
+ * and the one case of `test.if` below checks that refusal instead.
+ */
+const it = process.platform === "win32" ? test.skip : test;
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 const root = resolve(import.meta.dir, "..");
@@ -23,8 +29,8 @@ const headers = { authorization: `Bearer ${token}`, "x-herdr-update": "1", "x-he
  * CI runner has them. Nothing else of these tests goes there (`scratch`).
  */
 const parent = trustRefusal(realpathSync(tmpdir()), harmlessGroups(), true) === null ? tmpdir() : "/tmp";
-function folder(under: string) {
-  const dir = mkdtempSync(join(under, "ovis-machine-profile-"));
+function folder(under: string, prefix = "ovis-machine-profile-") {
+  const dir = mkdtempSync(join(under, prefix));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   return dir;
 }
@@ -46,19 +52,58 @@ function cookieRow(stateDir: string, secret: string): string {
   ] }), { mode: 0o600 });
   return id;
 }
+/** A state folder a profile has taken before: its marker, as the profile writes it. */
+function marked(stateDir: string) {
+  writeFileSync(join(stateDir, "machine-profile.json"), '{"profile":"machine"}', { mode: 0o600 });
+}
+/** Every entry under `dir` with its bytes: what a refusal must leave as it was. */
+function contents(dir: string) {
+  return (readdirSync(dir, { recursive: true }) as string[]).sort().map((name) => {
+    const path = join(dir, name);
+    const entry = lstatSync(path);
+    return [name, entry.isFile() ? readFileSync(path, "base64") : entry.isDirectory() ? "folder" : "other"];
+  });
+}
+/** A herdr at `socket` that answers ping with protocol 22, and counts the connections it gets. */
+function fakeHerdr(socket: string) {
+  let connections = 0;
+  const listener = Bun.listen<{ line: string }>({ unix: socket, socket: {
+    open(client) { connections++; client.data = { line: "" }; },
+    data(client, chunk) {
+      client.data.line += chunk.toString();
+      if (!client.data.line.includes("\n")) return;
+      const { id } = JSON.parse(client.data.line) as { id: string };
+      client.write(`${JSON.stringify({ id, result: { version: "fixture", protocol: 22 } })}\n`);
+      client.end();
+    },
+  } });
+  cleanup.push(() => listener.stop(true));
+  return { connections: () => connections };
+}
+/**
+ * A folder for XDG_CONFIG_HOME, its herdr folder `<it>/herdr`: a short path, as a unix socket's in it must be, and
+ * with no link in it (macOS's temporary folder is reached through one), as the profile requires of a herdr socket.
+ */
+const herdrConfig = () => realpathSync(folder(parent, "ovis-h-"));
+/** The start of a selected socket's refusal, which tools match on; the walk's reason for the owner may follow it. */
+const unsafeSocket = expect.stringMatching(/^The selected herdr socket cannot be used safely by this account/);
 /**
  * The PATH a launched server gets: the system's folders only (it runs by Bun's full path). A server reads the
  * versions of the agent tools it finds on its PATH, each in a process group of its own that outlives a server
  * a test ends, and those tools would write into the HOME of a server whose folders the test has removed.
  */
 const launchPath = "/usr/bin:/bin";
-/** `undefined` in `env` leaves that variable out of the server's environment; `umask` is the one the server starts under. */
+/**
+ * `undefined` in `env` leaves that variable out of the server's environment; `umask` is the one the server starts
+ * under. HOME is a folder of its own unless `env` names one: Bun writes its cache into HOME before the server
+ * runs, and a profile starts only on an empty state folder or one it marked.
+ */
 function launch(stateDir: string, env: Record<string, string | undefined> = {}, umask?: string) {
   const ready = deferred<string>();
   let output = "";
   let errors = "";
   const merged: Record<string, string | undefined> = { ...process.env, OVIS_PROFILE: "machine", OVIS_PREVIEW: "fleet", OVIS_RUNTIME: "herdr", OVIS_STATE_DIR: stateDir,
-    HOME: stateDir, OVIS_TOKEN: token, PATH: launchPath, PORT: "0", HOST: "127.0.0.1", HERDR_REMOTE_SOCKET: process.env["HERDR_SOCKET"] ?? "",
+    HOME: env["HOME"] ?? scratch(), OVIS_TOKEN: token, PATH: launchPath, PORT: "0", HOST: "127.0.0.1", HERDR_REMOTE_SOCKET: process.env["HERDR_SOCKET"] ?? "",
     OVIS_MANAGED: "0", OVIS_TAILSCALE_SERVE_ONLY: "0", OVIS_RELAY_URL: "wss://relay.invalid", ...env };
   const command = umask === undefined ? [process.execPath, "server/main.ts", "serve"] : ["/bin/sh", "-c", `umask ${umask} && exec "$0" server/main.ts serve`, process.execPath];
   const child = Bun.spawn(command, {
@@ -108,10 +153,12 @@ it("binds the machine profile only to IPv4 loopback despite publishing settings"
 
 it.each(["environment", "saved"])("refuses herdr-core selected by %s in its health and runs no hc process", async (source) => {
   const dir = state();
-  const calls = join(dir, "hc-calls");
-  const hc = join(dir, "hc");
+  const bin = scratch();
+  const calls = join(bin, "hc-calls");
+  const hc = join(bin, "hc");
   writeFileSync(hc, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nif [ "$1" = --version ]; then echo 'hc 0.1.18'; else exit 1; fi\n`, { mode: 0o700 });
-  if (source === "saved") writeFileSync(join(dir, "runtime-0.json"), JSON.stringify({ runtime: "herdr-core", previous: "herdr" }));
+  // a choice saved in a folder the profile took before
+  if (source === "saved") { marked(dir); writeFileSync(join(dir, "runtime-0.json"), JSON.stringify({ runtime: "herdr-core", previous: "herdr" })); }
   // the core's own folders are this test's: no core of the user's is ever looked at. Under root's sticky
   // /tmp: a core socket is taken only on a path that no other account can write
   const core = mkdtempSync("/tmp/ovis-machine-core-absent-");
@@ -158,6 +205,13 @@ it("refuses the machine profile without OVIS_PREVIEW=fleet before its state fold
   expect(health["machine_profile"]).toBeDefined();
 });
 
+test.if(process.platform === "win32")("refuses the machine profile on Windows before its state folder is touched", async () => {
+  // a folder nothing walks: the walk's fallback /tmp is no folder on Windows
+  const dir = scratch();
+  expect(await refused(launch(dir))).toContain("Windows");
+  expect(readdirSync(dir)).toEqual([]);
+});
+
 it("keeps an ordinary server's health free of the profile's facts, with OVIS_PREVIEW set or not", async () => {
   for (const preview of [undefined, "fleet"]) {
     const base = await bounded(launch(state(), { OVIS_PROFILE: "", OVIS_PREVIEW: preview }).ready, 20_000);
@@ -169,6 +223,14 @@ it("keeps an ordinary server's health free of the profile's facts, with OVIS_PRE
     const stranger = await (await fetch(`${base}/api/health`)).json() as Record<string, unknown>;
     expect(stranger["auth"]).toMatchObject({ authenticated: false });
     expect(stranger).not.toHaveProperty("machine_profile");
+  }
+});
+
+it("has an ordinary server hold its state folder only with OVIS_PREVIEW=fleet", async () => {
+  for (const [preview, held] of [[undefined, false], ["fleet", true]] as const) {
+    const dir = state();
+    await bounded(launch(dir, { OVIS_PROFILE: "", OVIS_PREVIEW: preview, HOME: scratch() }).ready, 20_000);
+    expect(existsSync(join(dir, "serve.own"))).toBe(held);
   }
 });
 
@@ -203,8 +265,23 @@ setInterval(() => {}, 60_000);`], { cwd: root, stdin: "ignore", stdout: "pipe", 
   return holder;
 }
 
+/** A process that holds `path` shared as an ordinary server started with OVIS_PREVIEW=fleet holds serve.own (server/index.ts), until the test ends. */
+async function sharedHold(path: string) {
+  const holder = Bun.spawn([process.execPath, "-e", `const { holdForLife } = await import(${JSON.stringify(join(root, "server/owner-guard.ts"))});
+holdForLife(${JSON.stringify(path)}, "shared");
+console.log("held");
+setInterval(() => {}, 60_000);`], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "inherit" });
+  const held = deferred<void>();
+  void (async () => { for await (const chunk of holder.stdout) if (new TextDecoder().decode(chunk).includes("held")) held.resolve(); })();
+  void holder.exited.then((code) => held.reject(new Error(`the hold's holder exited ${code}`)));
+  cleanup.push(async () => { holder.kill(); await bounded(holder.exited, 15_000); });
+  await bounded(held.promise, 20_000);
+}
+
 it("refuses a state folder where an Ovis supervisor alive records itself, and starts once that owner is gone", async () => {
   const dir = state();
+  // a folder the profile took before, which a supervisor then took
+  marked(dir);
   // where a real Ovis records itself: <state folder>/updates/<checkout and port>/supervisor.lock
   const lock = join(updateStateDir(root, 7317, dir), "supervisor.lock");
   const holder = await supervisorRecord(lock);
@@ -239,7 +316,7 @@ it.each(spellings)("refuses a default Ovis state folder named by %s and writes n
     writeFileSync(join(home, ".config", name, "devices.json"), "{}");
   }
   const server = launch(home, { HOME: home, XDG_CONFIG_HOME: undefined, OVIS_STATE_DIR: spelling(home) });
-  expect(await refused(server)).toBe("The machine profile does not run on a default Ovis state folder, so no server was started; name a folder of its own with OVIS_STATE_DIR.");
+  expect(await refused(server)).toContain("default Ovis state folder");
   for (const name of ["ovis", "herdr-web-ui"]) expect(readdirSync(join(home, ".config", name))).toEqual(["devices.json"]);
 });
 
@@ -263,15 +340,182 @@ it("names HERDR_SOCKET when the socket it gives cannot be used, and says which h
   expect(await response.json()).toMatchObject({ machine_profile: { runtime_down: true, reason: "HERDR_SOCKET must be an absolute path ending in /herdr.sock" } });
 });
 
-it("keeps authenticated server health available while the selected classic engine is absent", async () => {
+it.each([["does not exist yet", false], ["exists", true]] as const)("keeps authenticated health while the selected herdr is absent under this account's herdr folder that %s, and uses that herdr once it starts", async (_, made) => {
   const dir = state();
-  const missing = join(dir, "herdr", "sessions", "absent", "herdr.sock");
-  const server = launch(dir, { HERDR_REMOTE_SOCKET: missing });
+  const config = herdrConfig();
+  if (made) mkdirSync(join(config, "herdr"), { mode: 0o700 });
+  // a named session whose herdr has not started yet
+  const server = launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" });
   await bounded(server.ready, 20_000);
   const response = await owner(dir, "/api/health", { headers });
   expect(response.status).toBe(200);
   expect(await response.json()).toMatchObject({ ok: true, auth: { authenticated: true }, machine_profile: { engine: "herdr", runtime_down: true, reason: "herdr is not running for the selected session" } });
+  const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  const herdr = fakeHerdr(socket);
+  expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject({ machine_profile: { runtime_down: false, reason: null }, herdr: { protocol: 22 } });
+  expect(herdr.connections()).toBeGreaterThan(0);
+});
 
+it("refuses an absent HERDR_REMOTE_SOCKET in a folder another account may write, and never uses a socket made there later", async () => {
+  // outside every herdr folder of this account, where anyone could make the socket once the profile runs
+  const open = scratch();
+  chmodSync(open, 0o777);
+  const socket = join(open, "herdr.sock");
+  const dir = state();
+  const server = launch(dir, { HERDR_REMOTE_SOCKET: socket, XDG_CONFIG_HOME: undefined });
+  await bounded(server.ready, 20_000);
+  const refusal = { machine_profile: { engine: "herdr", runtime_down: true, reason: unsafeSocket } };
+  expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject(refusal);
+  const planted = fakeHerdr(socket);
+  expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject(refusal);
+  await (await owner(dir, "/api/session", { headers })).text();
+  expect(planted.connections()).toBe(0);
+});
+
+it("connects to nothing that appears at the selected path but this account's own socket", async () => {
+  const dir = state();
+  const config = herdrConfig();
+  const server = launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" });
+  await bounded(server.ready, 20_000);
+  // what appears at the selected path is a link to a herdr in a folder anyone may write
+  const open = scratch();
+  chmodSync(open, 0o777);
+  const planted = fakeHerdr(join(open, "herdr.sock"));
+  const selected = join(config, "herdr", "sessions", "a", "herdr.sock");
+  mkdirSync(dirname(selected), { recursive: true, mode: 0o700 });
+  symlinkSync(join(open, "herdr.sock"), selected);
+  expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject({ machine_profile: { runtime_down: true, reason: unsafeSocket } });
+  await (await owner(dir, "/api/session", { headers })).text();
+  expect(planted.connections()).toBe(0);
+});
+
+it("finds the one herdr session that starts after it, when none was selected", async () => {
+  const dir = state();
+  const config = herdrConfig();
+  const server = launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "", HERDR_SOCKET: undefined });
+  await bounded(server.ready, 20_000);
+  expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject({ machine_profile: { runtime_down: true, reason: "herdr is not running for the selected session" } });
+  const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  fakeHerdr(socket);
+  expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject({ machine_profile: { runtime_down: false, reason: null }, herdr: { protocol: 22 } });
+});
+
+/** A HOME everyone may write with a private ~/.config in it, and the socket of its herdr session `a`. */
+function openHome() {
+  const home = herdrConfig();
+  chmodSync(home, 0o777);
+  mkdirSync(join(home, ".config"), { mode: 0o700 });
+  return { home, socket: join(home, ".config", "herdr", "sessions", "a", "herdr.sock") };
+}
+
+it.each(["absent", "running"])("refuses a named session whose herdr is %s under a HOME another account may write, and names that folder to its owner alone", async (herdr) => {
+  // that account could rename ~/.config between the check and a connection, with no link on the path
+  const { home, socket } = openHome();
+  let planted: ReturnType<typeof fakeHerdr> | undefined;
+  if (herdr === "running") { mkdirSync(dirname(socket), { recursive: true, mode: 0o700 }); planted = fakeHerdr(socket); }
+  const dir = state();
+  const server = launch(dir, { HOME: home, XDG_CONFIG_HOME: undefined, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" });
+  const base = await bounded(server.ready, 20_000);
+  const health = await (await owner(dir, "/api/health", { headers })).json() as { machine_profile: { reason: string } };
+  // read first: toMatchObject puts its matcher where it matched
+  const { reason } = health.machine_profile;
+  expect(health).toMatchObject({ machine_profile: { runtime_down: true, reason: unsafeSocket } });
+  // the walk's reason names the folder another account may write, in the start's engine line too, never on standard error
+  expect(reason).toContain(`${home} `);
+  expect(server.output()).toContain(`Machine engine: herdr (${reason})\n`);
+  expect(server.errors()).not.toContain(home);
+  // nobody without full access reads it: TCP answers liveness, and the socket a request naming another host 401
+  expect(await (await fetch(`${base}/api/health`, { headers })).text()).toBe('{"ok":true}');
+  const stranger = await owner(dir, "/api/health", { headers: { ...headers, host: "evil.example" } });
+  expect([stranger.status, (await stranger.text()).includes(home)]).toEqual([401, false]);
+  expect(planted?.connections() ?? 0).toBe(0);
+});
+
+it("refuses its pinned herdr at once when a folder on the way becomes writable by everyone", async () => {
+  const dir = state();
+  const config = herdrConfig();
+  const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  const herdr = fakeHerdr(socket);
+  const server = launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "a" });
+  await bounded(server.ready, 20_000);
+  expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject({ machine_profile: { runtime_down: false, reason: null } });
+  const used = herdr.connections();
+  // well inside the age the profile keeps its ACL answers: a folder's mode is read before every connection
+  chmodSync(join(config, "herdr"), 0o777);
+  const health = await (await owner(dir, "/api/health", { headers })).json() as { machine_profile: { reason: string } };
+  const { reason } = health.machine_profile;
+  expect(health).toMatchObject({ machine_profile: { runtime_down: true, reason: unsafeSocket } });
+  expect(reason).toContain(join(config, "herdr"));
+  expect(herdr.connections()).toBe(used);
+});
+
+it("looks again at the next health check when the one session it found was refused", async () => {
+  const { home, socket } = openHome();
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  fakeHerdr(socket);
+  const dir = state();
+  const server = launch(dir, { HOME: home, XDG_CONFIG_HOME: undefined, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "", HERDR_SOCKET: undefined });
+  await bounded(server.ready, 20_000);
+  expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject({ machine_profile: { runtime_down: true, reason: unsafeSocket } });
+  chmodSync(home, 0o700);
+  expect(await (await owner(dir, "/api/health", { headers })).json()).toMatchObject({ machine_profile: { runtime_down: false, reason: null }, herdr: { protocol: 22 } });
+});
+
+it("looks for a herdr that started after it on a session request too, before any health check", async () => {
+  const dir = state();
+  const config = herdrConfig();
+  const server = launch(dir, { XDG_CONFIG_HOME: config, HERDR_REMOTE_SOCKET: "", HERDR_REMOTE_SESSION: "", HERDR_SOCKET: undefined });
+  await bounded(server.ready, 20_000);
+  const socket = join(config, "herdr", "sessions", "a", "herdr.sock");
+  mkdirSync(dirname(socket), { recursive: true, mode: 0o700 });
+  const herdr = fakeHerdr(socket);
+  await (await owner(dir, "/api/session", { headers })).text();
+  expect(herdr.connections()).toBeGreaterThan(0);
+});
+
+it("takes a state folder holding only an unheld serve.own, as a start killed before its mark leaves it", async () => {
+  const dir = state();
+  writeFileSync(join(dir, "serve.own"), "", { mode: 0o600 });
+  await bounded(launch(dir).ready, 20_000);
+  expect(JSON.parse(readFileSync(join(dir, "machine-profile.json"), "utf8"))).toEqual({ profile: "machine" });
+});
+
+it("refuses a state folder whose serve.own an ordinary server holds shared, as owned by another server", async () => {
+  const dir = state();
+  await sharedHold(join(dir, "serve.own"));
+  expect(await refused(launch(dir))).toContain("already owns this Ovis state directory");
+  expect(readdirSync(dir)).toEqual(["serve.own"]);
+});
+
+it("refuses a state folder an ordinary server has used, and leaves it as it was", async () => {
+  const dir = state();
+  // an ordinary server without the preview takes no hold: the folder is told apart by what is in it
+  const ordinary = launch(dir, { OVIS_PROFILE: "", OVIS_PREVIEW: undefined });
+  await bounded(ordinary.ready, 20_000);
+  ordinary.child.kill("SIGKILL");
+  await bounded(ordinary.exited, 15_000);
+  const before = contents(dir);
+  expect(before.length).toBeGreaterThan(0);
+  const profile = launch(dir);
+  expect(await bounded(profile.ready.then(() => "started", () => profile.exited), 20_000)).toBe(1);
+  expect(await refused(profile)).toContain(realpathSync(dir));
+  expect(contents(dir)).toEqual(before);
+});
+
+it("takes an empty state folder and marks it as its own, and starts again on the folder it marked", async () => {
+  const dir = state();
+  const first = launch(dir);
+  await bounded(first.ready, 20_000);
+  const marker = join(dir, "machine-profile.json");
+  expect(JSON.parse(readFileSync(marker, "utf8"))).toEqual({ profile: "machine" });
+  expect(statSync(marker).mode & 0o777).toBe(0o600);
+  first.child.kill("SIGKILL");
+  await bounded(first.exited, 15_000);
+  await bounded(launch(dir).ready, 20_000);
+  expect((await owner(dir, "/api/health")).status).toBe(200);
 });
 
 const restricted = [
@@ -443,7 +687,10 @@ it("refuses on its socket a request that names another host or shows a proxy, a 
     }
   }
   const proxied: [string, string][] = [["x-forwarded-for", "203.0.113.7"], ["x-forwarded-host", "localhost"], ["x-forwarded-proto", "http"], ["x-real-ip", "203.0.113.7"],
-    ["forwarded", "for=203.0.113.7"], ["via", "1.1 proxy"], ["tailscale-user-login", "owner@example.com"], ["tailscale-funnel-request", "?1"]];
+    ["forwarded", "for=203.0.113.7"], ["via", "1.1 proxy"], ["tailscale-user-login", "owner@example.com"], ["tailscale-funnel-request", "?1"],
+    ["x-forwarded-port", "443"], ["x-forwarded-server", "proxy"], ["x-forwarded-scheme", "https"], ["x-original-forwarded-for", "203.0.113.7"],
+    ["cf-connecting-ip", "203.0.113.7"], ["true-client-ip", "203.0.113.7"], ["x-client-ip", "203.0.113.7"], ["fly-client-ip", "203.0.113.7"],
+    ["x-envoy-external-address", "203.0.113.7"], ["cdn-loop", "cloudflare"]];
   for (const [name, value] of proxied) {
     const response = await owner(stateDir, "/api/devices", { headers: { [name]: value } });
     expect([name, response.status, (await response.json() as { error: { code: string } }).error.code]).toEqual([name, 401, "unauthorized"]);
@@ -474,6 +721,8 @@ it("refuses on its socket a request that names no host at all, as HTTP/1.0 may",
 it("ignores OVIS_TOKEN and says so once at its start, and names the devices paired at its own address that cannot reach it", async () => {
   const dir = state();
   const secret = "machine-contract-cookie";
+  // a folder the profile took before, with rows paired at the machine's own address in it
+  marked(dir);
   const id = cookieRow(dir, secret);
   const server = launch(dir);
   const base = await bounded(server.ready, 20_000);
@@ -495,8 +744,8 @@ it("makes its folder 0700 and its socket 0600 under umask 002, gives the umask b
   expect(statSync(dir).mode & 0o7777).toBe(0o700);
   expect(lstatSync(socket).isSocket()).toBe(true);
   expect(lstatSync(socket).mode & 0o7777).toBe(0o600);
-  // what the files and processes it makes afterwards get
-  expect(/^Umask:\s+(\d+)$/m.exec(readFileSync(`/proc/${server.child.pid}/status`, "utf8"))?.[1]).toBe("0002");
+  // what the files and processes it makes afterwards get, where /proc shows it
+  if (process.platform === "linux") expect(/^Umask:\s+(\d+)$/m.exec(readFileSync(`/proc/${server.child.pid}/status`, "utf8"))?.[1]).toBe("0002");
   expect(JSON.parse(readFileSync(join(dir, "serve.lock", "http.json"), "utf8"))).toEqual({ port: Number(new URL(base).port), hostname: "127.0.0.1", socket, door: 1 });
   // the kernel checks the folder at every connect, for this account too
   chmodSync(dir, 0o600);
@@ -591,6 +840,8 @@ it("lets exactly one of a profile and an ordinary server started at the same mom
 
 it("starts an ordinary server whose hold cannot be taken for another reason, and refuses a profile there", async () => {
   const dir = state();
+  // a folder the profile took before: what refuses it is the hold
+  marked(dir);
   mkdirSync(join(dir, "serve.own"));
   const ordinary = launch(dir, { OVIS_PROFILE: "", HOME: scratch() });
   await bounded(ordinary.ready, 20_000);

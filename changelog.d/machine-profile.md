@@ -7,10 +7,8 @@
   it is alive, and `OVIS_TOKEN` is ignored there; its owner reaches it on the unix socket
   `serve.sock` in its state folder, which only that account can open. It does not start on Windows.
   Without `OVIS_PREVIEW=fleet` it says what to set and exits before it touches its state folder.
-  The machine profile stays a preview.
-
-### Changed
-- `ovis-server serve` holds a lock file `serve.own` in its state folder while it runs (not on
-  Windows, where no machine profile runs), so that a machine profile does not start on a state
-  folder an ordinary server holds, nor an ordinary server on one a profile holds. Two ordinary
-  servers share a folder as before.
+  A profile starts only on a state folder that is empty or that it marked itself
+  (`machine-profile.json`), not on one another server has written to. An ordinary server started
+  with `OVIS_PREVIEW=fleet` holds a lock file `serve.own` in its state folder (not on Windows) and
+  does not start on a profile's folder; without the preview an ordinary server takes no lock and is
+  not kept off a profile's folder. The machine profile stays a preview.

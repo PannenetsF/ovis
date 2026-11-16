@@ -1,6 +1,9 @@
 import { existsSync, lstatSync, opendirSync, readFileSync, statSync, realpathSync } from "node:fs";
+import type { Stats } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { dirname, normalize } from "node:path";
+import { aclReader, harmlessGroups, trustRefusal } from "./herdr-core/discovery.ts";
 import { herdrAcceptsConnection } from "./herdr/client.ts";
 import type { FoundHerdrSession } from "../shared/machines.ts";
 
@@ -106,6 +109,84 @@ export async function chosenHerdrSocketStatus(path: string, host: HerdrDiscovery
     return answering ? "usable" : "gone";
   } catch { return "gone"; }
   finally { clearTimeout(timer); }
+}
+
+/**
+ * Where a socket a server keeps for its life may be (pinnedHerdrSocketStatus): trusted herdr folders, this account,
+ * and `walk`, why another account could rename, replace or write something on the way from `/` to a folder or in
+ * it (null: nobody could).
+ */
+export interface HerdrSocketPlace { dirs: string[]; uid: number | undefined; walk(folder: string): string | null }
+
+/** How long a pinned place keeps its ACL answers and its private group: as long as macOS's ACL reads are kept. */
+const PLACE_ACL_AGE_MS = 60_000;
+
+/**
+ * A place's walk: trustRefusal (each folder this account's or root's, none writable by anybody else but a sticky
+ * one on the way, as /tmp). A check of where a path points proves nothing about the connection after it while
+ * another account may rename a folder above it. One ACL reader and one private-group answer per place, read again
+ * after PLACE_ACL_AGE_MS: getfacl, which runs for each group-writable folder, would otherwise run before every
+ * connection. Modes, owners and groups are read on every walk, so a folder made unsafe by chmod or chown is
+ * refused at once. Only an ACL answer waits out its age, and only this account or root can change the ACL of a
+ * folder the walk accepts: every such folder is theirs.
+ */
+function placeWalk(): (folder: string) => string | null {
+  let harmless = harmlessGroups(), acl = aclReader(), since = Date.now();
+  return (folder) => {
+    if (Date.now() - since >= PLACE_ACL_AGE_MS) { harmless = harmlessGroups(); acl = aclReader(); since = Date.now(); }
+    return trustRefusal(folder, harmless, true, acl);
+  };
+}
+
+/** The nearest folder of `path` that exists, from its parent up, and its lstat; null when one on the way cannot be read. */
+function nearestFolder(path: string): { dir: string; folder: Stats } | null {
+  for (let dir = dirname(path); ; dir = dirname(dir)) {
+    try { return { dir, folder: lstatSync(dir) }; }
+    catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT") || dir === "/") return null; }
+  }
+}
+
+/**
+ * chosenHerdrSocketStatus for a socket a server selects once and keeps talking to for its life (the machine
+ * profile), with `place`, what each later connection is held to (heldHerdrSocketStatus). Before anything
+ * connects there, the walk to the nearest folder of the path that exists must be safe (`reason`: why it is not,
+ * naming the folder, for the owner). "gone"
+ * (absent, or a socket that does not answer) means the server will use whatever answers there later, so it is
+ * "gone" only where no other account can put a socket: the path is normalized and lies under a trusted herdr
+ * folder of this account, or under a configured one (`<home>/.config/herdr`, `<xdg>/herdr`) that does not exist
+ * yet, and that nearest folder is this account's, reached through no link, and writable by no group or other
+ * account. A herdr folder found only from a running server's environment counts only once it exists.
+ */
+export async function pinnedHerdrSocketStatus(path: string, host: HerdrDiscoveryHost = currentHost()): Promise<{ status: "usable" | "gone" | "refused"; place: HerdrSocketPlace; reason?: string }> {
+  const scope = await discoveryScope(host);
+  const configured = [join(host.home, ".config"), host.xdg].flatMap((root) => root?.startsWith("/") && !existsSync(join(root, "herdr")) ? [join(root, "herdr")] : []);
+  const place = { dirs: [...scope.dirs, ...configured], uid: scope.uid, walk: placeWalk() };
+  const nearest = nearestFolder(path);
+  if (nearest === null) return { status: "refused", place };
+  const reason = place.walk(nearest.dir);
+  if (reason !== null) return { status: "refused", place, reason };
+  const status = await chosenHerdrSocketStatus(path, host, scope);
+  if (status !== "gone") return { status, place };
+  if (normalize(path) !== path || !place.dirs.some((dir) => path.startsWith(dir + "/"))) return { status: "refused", place };
+  const { dir, folder } = nearest;
+  const own = folder.isDirectory() && folder.uid === place.uid && (folder.mode & 0o022) === 0 && realpathSync(dir) === dir;
+  return { status: own ? "gone" : "refused", place };
+}
+
+/**
+ * A pinned socket as it is now, checked before each connection to it: "usable" only while it is this account's
+ * socket under `place`, its folder reached through no link and walked safely; "gone" while nothing is there.
+ * It does not connect. The socket's own path is never resolved: macOS refuses realpath on a socket
+ * (EOPNOTSUPP), and a last part that lstat calls a socket is no link.
+ */
+export function heldHerdrSocketStatus(path: string, place: HerdrSocketPlace): "usable" | "gone" | "refused" {
+  try {
+    const socket = lstatSync(path);
+    const folder = dirname(path);
+    return socket.isSocket() && socket.uid === place.uid && realpathSync(folder) === folder && place.dirs.some((dir) => path.startsWith(dir + "/")) && place.walk(folder) === null ? "usable" : "refused";
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "ENOENT" ? "gone" : "refused";
+  }
 }
 
 export async function discoverHerdrSessions(host: HerdrDiscoveryHost = currentHost()): Promise<FoundHerdrSession[]> {

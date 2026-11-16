@@ -77,8 +77,19 @@ function refuseLiveHerdr(socketPath: string, env: Record<string, string | undefi
  */
 export function socketAddress(socketPath: string): string {
   refuseLiveHerdr(socketPath);
-  return process.platform === "win32" && !socketPath.startsWith("\\\\.\\pipe\\") ? `\\\\.\\pipe\\${socketPath}` : socketPath;
+  const checked = checkedHerdrSocket(socketPath);
+  return process.platform === "win32" && !checked.startsWith("\\\\.\\pipe\\") ? `\\\\.\\pipe\\${checked}` : checked;
 }
+
+/**
+ * The machine profile's check of a herdr socket before each connection to it, set once it pins its session
+ * (server/machine-profile.ts): the address to use instead, where nothing listens, while the socket fails it.
+ * An ordinary server sets none.
+ */
+let socketCheck: ((socketPath: string) => string) | null = null;
+export function checkHerdrSockets(check: (socketPath: string) => string): void { socketCheck = check; }
+/** Where a connection to herdr, or a herdr command it starts, goes: `socketPath`, unless the profile's check refuses it. */
+export function checkedHerdrSocket(socketPath: string): string { return socketCheck?.(socketPath) ?? socketPath; }
 
 /** herdr's `terminal attach` exists on Unix only (herdrdev/herdr#4821); its ping does not say so yet. */
 export function terminalAttachSupported(capabilities?: Record<string, unknown>): boolean {

@@ -1,7 +1,7 @@
 import type { TailnetPcsOptions } from "./tailnet-pcs.ts";
 import type { SshCandidatesOptions } from "./ssh-candidates.ts";
 import "./adopt-legacy-env.ts";
-import { claimServerState, machineEngine, machineHerdrBinary, machineSocket, machineUnauthorized, MACHINE_DIRECT_CARRIER_ENABLED, ownerSocketPath } from "./machine-profile.ts";
+import { claimServerState, machineEngine, machineHerdrBinary, machineSocket, machineSocketRefusal, machineUnauthorized, MACHINE_DIRECT_CARRIER_ENABLED, ownerSocketPath } from "./machine-profile.ts";
 import { holdForLife, OwnerGuardBusy } from "./owner-guard.ts";
 import { fleetPreview } from "./preview.ts";
 import type { RelaySocket } from "../shared/relay-channel.ts";
@@ -149,9 +149,9 @@ export function createServer(
   provided: {
     /** The ordinary device server beside an existing classic herdr, without engine or network controls. */
     profile?: "machine";
-    /** The engine selection from serve, and why it is down at this moment (null: ready), also while its engine is down. */
+    /** The engine selection from serve, and why it is down at this moment (null: ready), asked at each health check. */
     machineEngine?: string;
-    machineRefusal?: () => string | null;
+    machineRefusal?: () => string | null | Promise<string | null>;
     port?: number;
     hostname?: string;
     /** Also listen on ::1 when the primary listener is bound to 127.0.0.1. */
@@ -684,8 +684,9 @@ export async function serve(): Promise<void> {
   // resolved once, for the same reason as in createServer
   const stateDir = ownership?.stateDir ?? defaultStateDir();
   // a shared hold for the life of this process: a machine profile, which holds its folder alone, is never
-  // started beside it, and it never beside a profile. Not on Windows, where no profile runs
-  if (!profile && process.platform !== "win32") {
+  // started beside it, and it never beside a profile. Only with the preview that lets a profile start at all:
+  // without it this server takes nothing a released one does not. Not on Windows, where no profile runs
+  if (!profile && fleetPreview() && process.platform !== "win32") {
     try {
       mkdirSync(stateDir, { recursive: true, mode: 0o700 });
       holdForLife(join(stateDir, "serve.own"), "shared");
@@ -709,13 +710,14 @@ export async function serve(): Promise<void> {
   let herdrCore: Awaited<ReturnType<typeof startRuntime>>;
   let choice: RuntimeChoice;
   let fallback: "no_herdr_core" | "no_alt_runtime" | undefined;
-  let machineRefusal: () => string | null = () => null;
+  let machineRefusal: () => string | null | Promise<string | null> = () => null;
   try {
     if (profile) {
       // the selection is read before chooseRuntime or startRuntime could discover or launch anything
       const engine = machineEngine(stateDir, Number(startEnv["PORT"] ?? 0));
       const refusal = await machineSocket(stateDir, engine);
-      machineRefusal = () => refusal;
+      // asked again at each health check: a session not selected is looked for until one runs
+      machineRefusal = machineSocketRefusal;
       setRuntime("herdr");
       choice = { runtime: "herdr", source: "env", reason: "machine profile" };
       herdrCore = null;

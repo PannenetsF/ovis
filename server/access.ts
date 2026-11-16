@@ -179,6 +179,17 @@ export function forwardingHeaders(headers: Headers): boolean {
   return PROXY_HEADERS.some((name) => headers.has(name)) || headers.has("tailscale-funnel-request");
 }
 
+/**
+ * forwardingHeaders for the machine profile's owner socket, which also takes the headers a common proxy, tunnel or
+ * CDN adds beyond PROXY_HEADERS for a forwarder in front of it. Only the profile asks, so an ordinary server's
+ * decisions stay as they were.
+ */
+export function machineForwardingHeaders(headers: Headers): boolean {
+  return forwardingHeaders(headers) || MACHINE_PROXY_HEADERS.some((name) => headers.has(name));
+}
+const MACHINE_PROXY_HEADERS = ["x-forwarded-port", "x-forwarded-server", "x-forwarded-scheme", "x-original-forwarded-for", "cf-connecting-ip",
+  "true-client-ip", "x-client-ip", "fly-client-ip", "x-envoy-external-address", "cdn-loop"];
+
 /** Headers a proxy adds and a browser or CLI on this PC has no reason to send; a Tailscale login is stated by a proxy too. */
 const PROXY_HEADERS = ["x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "forwarded", "via", "tailscale-user-login"];
 

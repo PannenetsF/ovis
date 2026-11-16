@@ -1164,6 +1164,28 @@ it("machine profile opens no direct listener even when the relay service is give
   expect(bound).toBe(0);
 });
 
+it("machine profile refuses its closed controls to a device through the relay with its proof", async () => {
+  const f = await machineFixture();
+  await f.start();
+  const peer = await client(f, await f.offer());
+  for (const target of ["/api/herdr/update", "/api/runtime/move", "/api/portal/start", "/api/machines", "/api/fleet/enable", "/api/bridge"]) {
+    const response = await peer.http(target, { method: "POST", headers: [["x-herdr-update", "1"]] });
+    expect([target, response.status, (await response.json() as { error: { code: string } }).error.code]).toEqual([target, 409, "machine_profile"]);
+  }
+});
+
+it.each(["an ordinary server", "the machine profile"])("%s refuses pane input to a watch device through the relay", async (kind) => {
+  const f = kind === "the machine profile" ? await machineFixture() : await fixture();
+  await f.start();
+  const offer = await f.offer();
+  const first = await client(f, offer);
+  f.app.context.services.devices.update(first.device.id, { role: "watch" });
+  await bounded(first.closed);
+  const watch = await client(f, offer, false, first.device);
+  const response = await watch.http("/api/pane/input", { method: "POST", headers: [["x-herdr-update", "1"]] });
+  expect([response.status, (await response.json() as { error: { code: string } }).error.code]).toEqual([403, "read_only"]);
+});
+
 it("machine profile tells a paired relay device why its classic engine is absent", async () => {
   const restore = unitHerdrOnly();
   cleanup.push(restore);
