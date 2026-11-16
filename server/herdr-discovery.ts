@@ -1,8 +1,8 @@
 import { existsSync, lstatSync, opendirSync, readFileSync, statSync, realpathSync } from "node:fs";
 import type { Stats } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { dirname, normalize } from "node:path";
+import { dirname, join } from "node:path";
+import { normalize } from "node:path";
 import { aclReader, harmlessGroups, trustRefusal } from "./herdr-core/discovery.ts";
 import { herdrAcceptsConnection } from "./herdr/client.ts";
 import type { FoundHerdrSession } from "../shared/machines.ts";
@@ -94,8 +94,9 @@ export async function chosenHerdrSocketStatus(path: string, host: HerdrDiscovery
   if (!validHerdrSocket(path)) return "refused";
   const allowed = scope ?? await discoveryScope(host);
   try {
+    // lstat proves the socket itself is no link; its folder carries the real-path check: Bun on macOS cannot resolve a socket (EOPNOTSUPP).
     const socket = lstatSync(path);
-    if (!socket.isSocket() || socket.uid !== allowed.uid || realpathSync(path) !== path) return "refused";
+    if (!socket.isSocket() || socket.uid !== allowed.uid || realpathSync(dirname(path)) !== dirname(path)) return "refused";
     if (![...allowed.dirs].some((dir) => path.startsWith(dir + "/"))) return "refused";
   } catch (error) {
     return error instanceof Error && "code" in error && error.code === "ENOENT" ? "gone" : "refused";
