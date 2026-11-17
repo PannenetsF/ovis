@@ -9,7 +9,7 @@ import { currentAgentRowTokens, subscribeAgentRowTokens } from "../lib/agentRowT
 import { useT } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { useEdgeFades } from "../lib/useEdgeFades.ts";
-import { AGENT_GROUPS, agentGroup, agentRoster, groupAgentRows, projectGroups, splitAgentRows, type AgentGroup, type AgentRow } from "../lib/agentRoster.ts";
+import { AGENT_GROUPS, agentGroup, agentRoster, groupAgentRows, isBackgroundAgent, isThreadAgent, projectGroups, splitAgentRows, type AgentGroup, type AgentRow } from "../lib/agentRoster.ts";
 import { stampState, stateSince } from "../lib/agentStateSince.ts";
 import { useAgentStateStamps } from "../lib/useAgentStateSince.ts";
 import { knownStatus } from "../lib/status.ts";
@@ -889,7 +889,10 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         ...resting.flatMap((row) => listItems([row], !restingShown && !isSelected(row)))];
     })() : listItems(groupRows);
   // a project's foldable heading: its name (or the no-project one), a dot for each state that asks for a look, and the count
-  const projectLabel = (project: string | null, groupRows: readonly AgentRow[]) => {
+  // Under project grouping the section is primary-only (coordinator/session rows); the threads and
+  // background agents stay off as rows, their count named on the heading as follow-ups. The dots
+  // still read every row, so a thread that needs the reader marks its project even while folded away.
+  const projectLabel = (project: string | null, groupRows: readonly AgentRow[], primaryRows: readonly AgentRow[], followUps: number) => {
     const foldKey = project ?? "";
     const projectFolded = projectFoldedOf(project);
     const states = groupRows.map((row) => agentGroup(rowStatus(row)));
@@ -901,7 +904,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         <span className="agent-named-group-name">{project ?? t("No project")}</span>
         {blockedCount > 0 && <span className="agent-named-group-dot" data-state="blocked" title={t("{count} need you", { count: blockedCount })}><span className="visually-hidden">{t("{count} need you", { count: blockedCount })}</span></span>}
         {workingCount > 0 && <span className="agent-named-group-dot" data-state="working" title={t("{count} working", { count: workingCount })}><span className="visually-hidden">{t("{count} working", { count: workingCount })}</span></span>}
-        <span className="agent-section-count">{groupRows.length}</span>
+        {followUps > 0 && <span className="agent-project-followups" data-followups={followUps} title={t("{count} follow-ups", { count: followUps })}>+{followUps}<span className="visually-hidden"> {t("{count} follow-ups", { count: followUps })}</span></span>}
+        <span className="agent-section-count">{primaryRows.length}</span>
       </button>
     </li>;
   };
@@ -928,17 +932,20 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     setBackgroundCollapsed(!backgroundCollapsed);
     try { window.localStorage.setItem(BACKGROUND_FOLD_KEY, backgroundCollapsed ? "0" : "1"); } catch { /* private mode: this page keeps it */ }
   };
-  // one section per project: its heading, then its people, threads and background parts in that order
+  // One section per project, drawn primary-only: only the coordinator/session rows get a line, the
+  // old board's card view. Threads and background agents are follow-ups — no rows, just a count on
+  // the heading — and its dots still aggregate them, so a follow-up that needs the reader marks the
+  // project. A follow-up the reader has open stays as a single row so the selection never vanishes.
   const projectSections: ReactNode[] | null = projects === null ? null : projects.map(({ project, rows: allProjectRows }) => {
     const folded = projectFoldedOf(project);
+    const followUpRows = allProjectRows.filter((row) => isThreadAgent(row.entry) || isBackgroundAgent(row.entry));
+    const primaryRows = allProjectRows.filter((row) => !followUpRows.includes(row));
     // the section hides while folded, apart from a row the reader selected, as a state group fold keeps its selection
     const keepKeys = new Set(folded ? allProjectRows.filter(isSelected).map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)) : []);
-    const perPart = splitAgentRows(allProjectRows, rowStatus, allRows);
+    const bodyRows = [...primaryRows, ...followUpRows.filter(isSelected)];
     return <Fragment key={`project-section:${project ?? ""}`}>
-      {projectLabel(project, allProjectRows)}
-      {hideSection(peopleBody(perPart.people), folded, keepKeys)}
-      {perPart.threads.length > 0 && hideSection(partItems("threads", perPart.threads, threadsFolded, onToggleThreads), folded, keepKeys)}
-      {perPart.background.length > 0 && hideSection(partItems("background", perPart.background, backgroundFolded, onToggleBackground), folded, keepKeys)}
+      {projectLabel(project, allProjectRows, primaryRows, followUpRows.length)}
+      {hideSection(peopleBody(bodyRows), folded, keepKeys)}
     </Fragment>;
   });
   const runPin = (state: PinMenu): void => {

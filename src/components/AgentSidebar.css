@@ -209,6 +209,21 @@
 .agent-project-group-label .agent-named-group-toggle { margin-top: var(--space-3); }
 .agent-project-group-label:first-child .agent-named-group-toggle { margin-top: 0; }
 
+/* primary-only project: the follow-ups (threads and background agents) named as one count beside the
+   primary rows' count, both pushed to the right together */
+.agent-project-followups {
+  flex: none;
+  margin-left: auto;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.agent-project-group-label .agent-section-count { margin-left: var(--space-2); }
+
 /* the folded part's rows stay in the list (a row that changes part moves), only out of sight */
 .agent-list .agent-item[hidden],
 .agent-list .agent-helpers[hidden] { display: none; }

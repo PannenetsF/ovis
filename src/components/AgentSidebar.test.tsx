@@ -1276,16 +1276,65 @@ describe("AgentSidebar fold memory", () => {
       await act(async () => { renderer?.unmount(); });
     });
 
-    it("keeps the threads fold inside its own project's section", async () => {
+    it("draws a project primary-only: the thread and background rows leave the list and count as follow-ups", async () => {
       stored.set("ovis:settings", JSON.stringify({ agentProjectGroups: true, agentOrder: "workspace" }));
-      // w1C is working, so its thread row stays in the threads part; a blocked one (w1D) would move to people
+      // w1C is a working thread in nix-hm, so it is a follow-up, not a row; w1D stays its primary
       const withThread: Record<string, Record<string, string>> = { ...twoProjects, "w1C:p1": { hp_role: "thread", hp_project: "nix-hm" } };
       await act(async () => { renderer = create(groupedList(inactive, withProjects(withThread))); });
-      const order = () => renderer!.root.findAll((node) => node.type === "li" && (node.props["data-project-group"] !== undefined || node.props["data-pane"] !== undefined || node.props.className === "agent-background-label"))
-        .map((node) => node.props["data-project-group"] ?? node.props["data-pane"] ?? "THREADS");
-      const drawn = order();
-      expect(drawn.indexOf("nix-hm")).toBeLessThan(drawn.indexOf("THREADS"));
-      expect(drawn.indexOf("THREADS")).toBeLessThan(drawn.indexOf("lagrange-system"));
+      const nixHm = heading("nix-hm").findByType("button");
+      // one primary row (w1D) and one follow-up (w1C)
+      expect(nixHm.findByProps({ className: "agent-section-count" }).children).toEqual(["1"]);
+      expect(nixHm.findByProps({ className: "agent-project-followups" }).props["data-followups"]).toBe(1);
+      // the follow-up gets no row and no separate threads heading
+      const drawnPanes = () => renderer!.root.findAll((node) => node.type === "li" && node.props["data-pane"] !== undefined).map((node) => node.props["data-pane"]);
+      expect(drawnPanes()).not.toContain("w1C:p1");
+      expect(drawnPanes()).toContain("w1D:p1");
+      expect(renderer!.root.findAll((node) => node.props.className === "agent-background-label")).toHaveLength(0);
+      // a project with only primary rows carries no follow-up badge
+      const lagrange = heading("lagrange-system").findByType("button");
+      expect(lagrange.findByProps({ className: "agent-section-count" }).children).toEqual(["2"]);
+      expect(() => lagrange.findByProps({ className: "agent-project-followups" })).toThrow();
+      await act(async () => { renderer?.unmount(); });
+    });
+
+    it("still marks a project for a follow-up that needs the reader, and keeps a selected follow-up in sight", async () => {
+      stored.set("ovis:settings", JSON.stringify({ agentProjectGroups: true, agentOrder: "workspace" }));
+      const blockedThread: Record<string, Record<string, string>> = { ...twoProjects, "w1D:p1": { hp_role: "thread", hp_project: "nix-hm" } };
+      const selecting = (pane: string) => <SettingsProvider>
+        <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+          <AgentSidebar machines={withProjects(blockedThread)} selectedMachineId="local" selectedPaneId={pane} stateWord={(machine) => machine.state} onSelect={() => {}} />
+        </SidebarFilterProvider>
+      </SettingsProvider>;
+      await act(async () => { renderer = create(selecting("w1C:p1")); });
+      // w1D is the fixture's blocked row; as a thread it no longer has a line, but its project still shows the blocked dot
+      const nixHm = heading("nix-hm").findByType("button");
+      expect(nixHm.findAll((node) => node.props.className === "agent-named-group-dot" && node.props["data-state"] === "blocked")).toHaveLength(1);
+      expect(nixHm.findByProps({ className: "agent-project-followups" }).props["data-followups"]).toBe(1);
+      await act(async () => { renderer?.unmount(); });
+      // the selected follow-up is the one follow-up that keeps a row, so the selection never vanishes
+      await act(async () => { renderer = create(selecting("w1D:p1")); });
+      const drawnPanes = () => renderer!.root.findAll((node) => node.type === "li" && node.props["data-pane"] !== undefined && node.props.hidden !== true).map((node) => node.props["data-pane"]);
+      expect(drawnPanes()).toContain("w1D:p1");
+      await act(async () => { renderer?.unmount(); });
+    });
+
+    it("keeps a project that has only follow-ups: its heading and count stay, with no rows under it", async () => {
+      stored.set("ovis:settings", JSON.stringify({ agentProjectGroups: true, agentOrder: "workspace" }));
+      const onlyThreads: Record<string, Record<string, string>> = {
+        "w1C:p1": { hp_role: "thread", hp_project: "nix-hm" },
+        "w1D:p1": { hp_role: "thread", hp_project: "nix-hm" },
+        "w1E:p1": { hp_project: "lagrange-system" },
+        "w1F:p1": { hp_project: "lagrange-system" },
+      };
+      await act(async () => { renderer = create(groupedList(inactive, withProjects(onlyThreads))); });
+      const nixHm = heading("nix-hm").findByType("button");
+      expect(nixHm.findByProps({ className: "agent-section-count" }).children).toEqual(["0"]);
+      expect(nixHm.findByProps({ className: "agent-project-followups" }).props["data-followups"]).toBe(2);
+      const drawnPanes = () => renderer!.root.findAll((node) => node.type === "li" && node.props["data-pane"] !== undefined && node.props.hidden !== true).map((node) => node.props["data-pane"]);
+      expect(drawnPanes()).not.toContain("w1C:p1");
+      expect(drawnPanes()).not.toContain("w1D:p1");
+      // the other project's primaries still draw
+      expect(drawnPanes()).toEqual(expect.arrayContaining(["w1E:p1", "w1F:p1"]));
       await act(async () => { renderer?.unmount(); });
     });
   });
