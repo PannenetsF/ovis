@@ -102,6 +102,8 @@ export interface Settings {
   foldHelpers: boolean;
   /** each workspace's agents listed under its row in the PCs list (components/Sidebar.tsx), a PC > workspace > agent tree; off until chosen */
   sidebarAgentTree: boolean;
+  /** the Agents list groups rows under the herdr-projects project their tokens name (components/AgentSidebar.tsx, shared/pane-tokens.ts paneProject); off until chosen */
+  agentProjectGroups: boolean;
   /** the selected PC's CPU, memory and fullest disk in the status bar (components/MachineStats.tsx PcLoadStatus); null until
    *  chosen on this device, which keeps it on (pcLoadOn) */
   pcLoad: boolean | null;
@@ -303,14 +305,14 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
 
 /** Raw custom text, key combinations and account keys are never copied. Requiring every other
  * Settings field in the projection makes a new field require an explicit collection decision.
- * keyBarExpanded, herdrPrefixKeys, agentLocks, lockedAgents, opencodeParentEnds, ompHeldFiles, restoreReplacedServer, the named agent groups, fileOpen, reopenFileOnReturn, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, sidebarPeek, phoneInbox, sidebarBackgroundWorkspaces, codexDrag, autoTabNames, composerArtifacts, composerPasteSend, composerBtw, terminalMirrorWrap, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, sidebarFilter, sidebarContext, sidebarAgentTree, foldHelpers, pcLoad, phoneTabs, voiceEngine, the agent groups, the
+ * keyBarExpanded, herdrPrefixKeys, agentLocks, lockedAgents, opencodeParentEnds, ompHeldFiles, restoreReplacedServer, the named agent groups, fileOpen, reopenFileOnReturn, webLinks, reuseExternalLinkTab, the launch modes, followHerdrFocus, sidebarPeek, phoneInbox, sidebarBackgroundWorkspaces, codexDrag, autoTabNames, composerArtifacts, composerPasteSend, composerBtw, terminalMirrorWrap, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, sidebarFilter, sidebarContext, sidebarAgentTree, agentProjectGroups, foldHelpers, pcLoad, phoneTabs, voiceEngine, the agent groups, the
  * interface font, the file text size and the folds its blocks start in are not collected: the telemetry schema
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "keyBarExpanded" | "shortcutOverrides" | "herdrPrefixKeys" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
   | "quickReplies" | "agentLocks" | "lockedAgents" | "opencodeParentEnds" | "ompHeldFiles" | "restoreReplacedServer" | "agentNamedGroups" | "agentGroupNames" | "agentGroupOf" | "usageOrder" | "usageHidden" | "fileOpen" | "filesPanel" | "webLinks" | "reuseExternalLinkTab" | "claudeLaunchMode" | "codexLaunchMode"
   | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort"
-  | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
+  | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "agentProjectGroups" | "foldHelpers" | "pcLoad"
   | "expandThinking" | "foldWork" | "customThemes" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
   | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "fileFontSize" | "fileFontBase" | "editTextFiles" | "reopenFileOnReturn" | "phoneTabs">;
 
@@ -429,6 +431,8 @@ export const SETTING_SCOPE = {
   foldHelpers: "device",
   // a phone's short drawer may keep the flat list a desk trades for the tree, as with the ring
   sidebarAgentTree: "device",
+  // a phone's short drawer may keep the flat project list a desk groups under headings, as with the tree
+  agentProjectGroups: "device",
   // a phone's narrow sidebar may do without the line a desk keeps, as with the filter
   pcLoad: "device",
   // a phone may group its agents by state while a desk keeps herdr's order, as with the filter
@@ -466,6 +470,7 @@ export const DEFAULT_SETTINGS: Settings = {
   sidebarContext: false,
   foldHelpers: false,
   sidebarAgentTree: false,
+  agentProjectGroups: false,
   pcLoad: null,
   // the Agents list's order (the workspace list keeps herdr's): the agents that need you first, the resting ones folded
   agentOrder: "waiting",
@@ -694,6 +699,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     sidebarContext: typeof record["sidebarContext"] === "boolean" ? record["sidebarContext"] : DEFAULT_SETTINGS.sidebarContext,
     foldHelpers: typeof record["foldHelpers"] === "boolean" ? record["foldHelpers"] : DEFAULT_SETTINGS.foldHelpers,
     sidebarAgentTree: typeof record["sidebarAgentTree"] === "boolean" ? record["sidebarAgentTree"] : DEFAULT_SETTINGS.sidebarAgentTree,
+    agentProjectGroups: typeof record["agentProjectGroups"] === "boolean" ? record["agentProjectGroups"] : DEFAULT_SETTINGS.agentProjectGroups,
     pcLoad: typeof record["pcLoad"] === "boolean" ? record["pcLoad"] : null,
     agentOrder: record["agentOrder"] === "waiting" || record["agentOrder"] === "workspace" || record["agentOrder"] === "activity" ? record["agentOrder"] : DEFAULT_SETTINGS.agentOrder,
     agentGroups: typeof record["agentGroups"] === "boolean" ? record["agentGroups"] : DEFAULT_SETTINGS.agentGroups,

@@ -535,7 +535,7 @@ function AppearancePage() {
       </SettingsRow>}
     </SettingsGroup>
 
-    <SettingsFold kind="more" keys={["autoTabNames", "sidebarFilter", "sidebarPeek", "phoneInbox", "sidebarBackgroundWorkspaces", "sidebarContext", "sidebarAgentTree", "foldHelpers", "agentMarks", "statusIndicators", "fileFontSize"]}>
+    <SettingsFold kind="more" keys={["autoTabNames", "sidebarFilter", "sidebarPeek", "phoneInbox", "sidebarBackgroundWorkspaces", "sidebarContext", "sidebarAgentTree", "agentProjectGroups", "foldHelpers", "agentMarks", "statusIndicators", "fileFontSize"]}>
       <SettingsGroup title={t("Sidebar")} section="sidebar-more">
         <SettingsRow icon={Tag} label={t("Name tabs from the first message")} description={t("On every device, a tab that has only a number shows the first few words of the first message sent in it. A name you gave a tab is never replaced.")}
           condition={<span className="settings-condition">{t("Only those words are kept, on this server, until the tab closes; turning this off deletes them.")}</span>} reset={["autoTabNames"]}>
@@ -558,6 +558,9 @@ function AppearancePage() {
         </SettingsRow>
         <SettingsRow icon={ListTree} label={t("Agents under workspaces")} description={t("On this device, the PCs list shows each workspace's agents under it. The Agents list stays as it is.")}>
           <Toggle label={t("Agents under workspaces")} checked={settings.sidebarAgentTree} onChange={(sidebarAgentTree) => update({ sidebarAgentTree })} />
+        </SettingsRow>
+        <SettingsRow icon={Tags} label={t("Group agents by project")} description={t("On this device, the Agents list groups its rows under the project herdr-projects named on the pane, with the threads and background agents kept inside each project. Panes no project names stay in one ungrouped list at the end.")}>
+          <Toggle label={t("Group agents by project")} checked={settings.agentProjectGroups} onChange={(agentProjectGroups) => update({ agentProjectGroups })} />
         </SettingsRow>
         <FoldHelpersRow />
         <SettingsRow icon={Shapes} label={t("Agent logos")} description={t("Color draws each agent's logo in its brand colors; Mono draws them without color. The choice applies on every device.")} wide>

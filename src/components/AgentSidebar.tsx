@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, cloneElement, isValidElement, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from "react";
 import { Bell, BellOff, ChevronDown, ChevronRight, Ellipsis, FolderInput, FolderOutput, Lock, LockOpen, Pin, PinOff, Terminal } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
@@ -9,7 +9,7 @@ import { currentAgentRowTokens, subscribeAgentRowTokens } from "../lib/agentRowT
 import { useT } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { useEdgeFades } from "../lib/useEdgeFades.ts";
-import { AGENT_GROUPS, agentGroup, agentRoster, groupAgentRows, splitAgentRows, type AgentGroup, type AgentRow } from "../lib/agentRoster.ts";
+import { AGENT_GROUPS, agentGroup, agentRoster, groupAgentRows, projectGroups, splitAgentRows, type AgentGroup, type AgentRow } from "../lib/agentRoster.ts";
 import { stampState, stateSince } from "../lib/agentStateSince.ts";
 import { useAgentStateStamps } from "../lib/useAgentStateSince.ts";
 import { knownStatus } from "../lib/status.ts";
@@ -219,6 +219,9 @@ const BACKGROUND_FOLD_KEY = "ovis:agents-background-collapsed";
 /** the fold of the threads' part (herdr-projects' `hp_role=thread` rows), kept the same way; it starts folded on every screen */
 const THREADS_FOLD_KEY = "ovis:agents-threads-collapsed";
 
+/** which project headings (Settings → Group agents by project) this device folds, the null project under "" */
+const PROJECT_FOLDS_KEY = "ovis:agent-project-folds";
+
 /** Settings → Fold helpers under their agent: the agents whose helpers this device lists in full, each by its pin key; every other agent's start folded */
 const HELPERS_OPEN_KEY = "ovis:agents-helpers-open";
 
@@ -264,6 +267,34 @@ function loadOpenHelpers(): string[] {
   } catch {
     return [];
   }
+}
+
+/** the project headings the device folds, "" for the rows no project names; none until a heading is folded */
+function loadProjectFolds(): string[] {
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(PROJECT_FOLDS_KEY) ?? "[]");
+    return Array.isArray(stored) ? stored.filter((key): key is string => typeof key === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Mark every heading and row of a folded project section hidden, except the agent rows named in
+ * keepKeys and their helpers lines, so a selected row stays in sight as under a state fold. The
+ * project's own heading is not passed in.
+ */
+function hideSection(nodes: readonly ReactNode[], hidden: boolean, keepKeys: ReadonlySet<string> = new Set()): ReactNode[] {
+  if (!hidden) return [...nodes];
+  const kept = (element: ReactElement): boolean => {
+    const key = (element.props as { "data-pin-key"?: string; "data-helpers-of"?: string })["data-pin-key"];
+    if (key !== undefined) return keepKeys.has(key);
+    const helpersOf = (element.props as { "data-helpers-of"?: string })["data-helpers-of"];
+    return helpersOf !== undefined && keepKeys.has(helpersOf);
+  };
+  return nodes.map((node) => isValidElement(node) && node.type === "li" && !kept(node as ReactElement)
+    ? cloneElement(node as ReactElement<{ hidden?: boolean }>, { hidden: true })
+    : node);
 }
 
 function initialBackgroundFold(): boolean {
@@ -350,6 +381,30 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   // the rows the list draws: the pinned card and the three parts, never the ones off the list
   const rows = useMemo(() => [...split.pinned, ...parts.people, ...parts.threads, ...parts.background], [split, parts]);
   const rowStatus = useCallback(({ machine, entry }: AgentRow) => machine.state === "connected" ? activity.status(machine.id, entry.pane) : undefined, [activity]);
+  // Settings → Group agents by project: the unpinned rows under the project their tokens name (lib/agentRoster.ts);
+  // the pinned card stays its own. A single project has nothing to head, so the flat list stays as it is.
+  // Projects order by urgency (a blocked row first), matching the old board's needs → working → recent.
+  const projects = useMemo(() => {
+    if (!settings.agentProjectGroups) return null;
+    const pinnedKeys = new Set(split.pinned.map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)));
+    const grouped = projectGroups(rows.filter((row) => !pinnedKeys.has(sidebarPinKey(row.machine.id, row.entry.pane.pane_id))), rowStatus);
+    return grouped.length > 1 ? grouped : null;
+  }, [settings.agentProjectGroups, rows, split.pinned, rowStatus]);
+  const projectKey = (project: string | null): string => project ?? "";
+  const projectFoldedOf = (project: string | null): boolean => {
+    const key = projectKey(project);
+    return filter.active ? projectFilterFold?.get(key) ?? projectFolds.includes(key) : projectFolds.includes(key);
+  };
+  const toggleProjectFold = (project: string | null): void => {
+    const key = projectKey(project);
+    if (filter.active) {
+      setProjectFilterFold((current) => new Map(current ?? []).set(key, !(current?.get(key) ?? projectFolds.includes(key))));
+      return;
+    }
+    const next = projectFolds.includes(key) ? projectFolds.filter((held) => held !== key) : [...projectFolds, key];
+    setProjectFolds(next);
+    try { window.localStorage.setItem(PROJECT_FOLDS_KEY, JSON.stringify(next)); } catch { /* private mode: this page keeps it */ }
+  };
   // Settings → Group agents by state (this device): the unpinned rows in groups, needs-you first (lib/agentRoster.ts)
   const byState = useCallback((list: readonly AgentRow[]) => groupAgentRows(list, {
     sort: settings.agentGroupSort,
@@ -421,6 +476,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const [backgroundFilterFold, setBackgroundFilterFold] = useState<boolean | null>(null);
   // the threads' part, kept the same way
   const [threadsFilterFold, setThreadsFilterFold] = useState<boolean | null>(null);
+  // Settings → Group agents by project: the project headings this device folds, and the filter's own per-project folds
+  const [projectFolds, setProjectFolds] = useState(loadProjectFolds);
+  const [projectFilterFold, setProjectFilterFold] = useState<ReadonlyMap<string, boolean> | null>(null);
   // and the one-line list's resting fold: a resting agent the filter matched is seen, not only kept (a filter
   // that hid its own matches would say "no match" with the match a fold away)
   const [restingFilterOpen, setRestingFilterOpen] = useState<boolean | null>(null);
@@ -429,6 +487,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     setFilterFold(null);
     setBackgroundFilterFold(null);
     setThreadsFilterFold(null);
+    setProjectFilterFold(null);
     setRestingFilterOpen(null);
   }, [filter.active]);
   const folded = filter.active ? filterFold ?? (collapsed && rows.length === 0) : collapsed;
@@ -783,15 +842,19 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     </li>;
   };
   const isSelected = (row: AgentRow) => row.machine.id === selectedMachineId && row.entry.pane.pane_id === selectedPaneId;
-  // the rows of the list's people part: in named groups, in state groups, or as they come
-  const peopleItems = named !== null
+  // the people part's own mechanism: named groups, state groups, the resting fold, or the rows as they come
+  const peopleBody = (groupRows: readonly AgentRow[]): ReactNode[] => named !== null
     // with every row in no group, the list draws no heading at all, as today
-    ? named.length === 1 && named[0]!.name === null ? listItems(named[0]!.rows)
-      : named.flatMap(({ name, rows: groupRows }) => {
-        const groupFolded = !filter.active && groupFolds.includes(name ?? "");
-        return [namedGroupLabel(name, groupRows), ...listItems(groupRows, groupFolded)];
-      })
-    : groups ? groups.flatMap(({ group, rows: groupRows }) => {
+    ? (() => {
+      const splitGroups = splitNamedGroups(groupRows, settings.agentGroupOf, groupNames, allRows);
+      return splitGroups.length === 1 && splitGroups[0]!.name === null
+        ? listItems(splitGroups[0]!.rows)
+        : splitGroups.flatMap(({ name, rows: namedRows }) => {
+          const groupFolded = !filter.active && groupFolds.includes(name ?? "");
+          return [namedGroupLabel(name, namedRows), ...listItems(namedRows, groupFolded)];
+        });
+    })()
+    : groups !== null ? byState(groupRows).flatMap(({ group, rows: stateRows }) => {
       // a state group folds from its heading (#3505), kept on this device; the filter shows what it kept, folding nothing.
       // The selected agent stays in sight under a folded heading, as it does under the list's other folds that start folded
       const groupFolded = !filter.active && stateFolds.includes(group);
@@ -800,18 +863,18 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
           <button type="button" className="agent-group-toggle" aria-expanded={!groupFolded} disabled={filter.active} onClick={() => toggleStateFold(group)}>
             {groupFolded ? <ChevronRight className="agent-section-caret" aria-hidden="true" /> : <ChevronDown className="agent-section-caret" aria-hidden="true" />}
             <span className="agent-group-name">{groupLabel(group, t)}</span>
-            <span className="agent-group-count">{groupRows.length}</span>
+            <span className="agent-group-count">{stateRows.length}</span>
           </button>
         </li>,
-        ...groupRows.flatMap((row) => listItems([row], groupFolded && !isSelected(row), group)),
+        ...stateRows.flatMap((row) => listItems([row], groupFolded && !isSelected(row), group)),
       ];
     }) : restingFold && named === null && groups === null ? (() => {
       // one line, waiting first: the agents that wait or work stay; the resting ones (idle, finished) fold under one line, a selected one in sight
       const inActive = (row: AgentRow) => holding ? held.current?.active.has(rowKey(row)) === true : busy(row);
-      const active = shownPeople.filter(inActive);
-      const resting = shownPeople.filter((row) => !inActive(row));
-      const restingCount = shownPeople.filter((row) => !busy(row)).length;
-      if (resting.length === 0) return listItems(shownPeople);
+      const active = groupRows.filter(inActive);
+      const resting = groupRows.filter((row) => !inActive(row));
+      const restingCount = groupRows.filter((row) => !busy(row)).length;
+      if (resting.length === 0) return listItems(groupRows);
       return [...listItems(active),
         <li className="agent-background-label agent-resting-label" key="resting">
           <button type="button" className="agent-background-toggle" aria-expanded={restingShown} onClick={() => {
@@ -824,7 +887,60 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
           </button>
         </li>,
         ...resting.flatMap((row) => listItems([row], !restingShown && !isSelected(row)))];
-    })() : listItems(shownPeople);
+    })() : listItems(groupRows);
+  // a project's foldable heading: its name (or the no-project one), a dot for each state that asks for a look, and the count
+  const projectLabel = (project: string | null, groupRows: readonly AgentRow[]) => {
+    const foldKey = project ?? "";
+    const projectFolded = projectFoldedOf(project);
+    const states = groupRows.map((row) => agentGroup(rowStatus(row)));
+    const blockedCount = states.filter((state) => state === "blocked").length;
+    const workingCount = states.filter((state) => state === "working").length;
+    return <li className="agent-named-group-label agent-project-group-label" key={`project:${foldKey}`} data-project-group={foldKey}>
+      <button type="button" className="agent-named-group-toggle" aria-expanded={!projectFolded} onClick={() => toggleProjectFold(project)}>
+        {projectFolded ? <ChevronRight className="agent-section-caret" aria-hidden="true" /> : <ChevronDown className="agent-section-caret" aria-hidden="true" />}
+        <span className="agent-named-group-name">{project ?? t("No project")}</span>
+        {blockedCount > 0 && <span className="agent-named-group-dot" data-state="blocked" title={t("{count} need you", { count: blockedCount })}><span className="visually-hidden">{t("{count} need you", { count: blockedCount })}</span></span>}
+        {workingCount > 0 && <span className="agent-named-group-dot" data-state="working" title={t("{count} working", { count: workingCount })}><span className="visually-hidden">{t("{count} working", { count: workingCount })}</span></span>}
+        <span className="agent-section-count">{groupRows.length}</span>
+      </button>
+    </li>;
+  };
+  // the people part's rows while grouping is off; with grouping on each project section renders its own people body
+  const peopleItems: ReactNode[] = peopleBody(shownPeople);
+  // the threads or background part's foldable heading and its rows; under project grouping the part sits inside each project
+  const partItems = (part: "threads" | "background", partRows: readonly AgentRow[], partFolded: boolean, onToggle: () => void): ReactNode[] => {
+    const label = <li className="agent-background-label" key={part}>
+      <button type="button" className="agent-background-toggle" aria-expanded={!partFolded} onClick={onToggle}>
+        {partFolded ? <ChevronRight className="agent-section-caret" aria-hidden="true" /> : <ChevronDown className="agent-section-caret" aria-hidden="true" />}
+        {compact ? <span>{t(part === "threads" ? "+{n} threads" : "+{n} background", { n: partRows.length })}</span>
+          : <><span>{t(part === "threads" ? "Threads" : "Background agents")}</span><span className="agent-section-count">{partRows.length}</span></>}
+      </button>
+    </li>;
+    return [label, ...listItems(partRows, partFolded)];
+  };
+  const onToggleThreads = (): void => {
+    if (filter.active) { setThreadsFilterFold(!threadsFolded); return; }
+    setThreadsCollapsed(!threadsCollapsed);
+    try { window.localStorage.setItem(THREADS_FOLD_KEY, threadsCollapsed ? "0" : "1"); } catch { /* private mode: this page keeps it */ }
+  };
+  const onToggleBackground = (): void => {
+    if (filter.active) { setBackgroundFilterFold(!backgroundFolded); return; }
+    setBackgroundCollapsed(!backgroundCollapsed);
+    try { window.localStorage.setItem(BACKGROUND_FOLD_KEY, backgroundCollapsed ? "0" : "1"); } catch { /* private mode: this page keeps it */ }
+  };
+  // one section per project: its heading, then its people, threads and background parts in that order
+  const projectSections: ReactNode[] | null = projects === null ? null : projects.map(({ project, rows: allProjectRows }) => {
+    const folded = projectFoldedOf(project);
+    // the section hides while folded, apart from a row the reader selected, as a state group fold keeps its selection
+    const keepKeys = new Set(folded ? allProjectRows.filter(isSelected).map(({ machine, entry }) => sidebarPinKey(machine.id, entry.pane.pane_id)) : []);
+    const perPart = splitAgentRows(allProjectRows, rowStatus, allRows);
+    return <Fragment key={`project-section:${project ?? ""}`}>
+      {projectLabel(project, allProjectRows)}
+      {hideSection(peopleBody(perPart.people), folded, keepKeys)}
+      {perPart.threads.length > 0 && hideSection(partItems("threads", perPart.threads, threadsFolded, onToggleThreads), folded, keepKeys)}
+      {perPart.background.length > 0 && hideSection(partItems("background", perPart.background, backgroundFolded, onToggleBackground), folded, keepKeys)}
+    </Fragment>;
+  });
   const runPin = (state: PinMenu): void => {
     // where the menu hands the focus back (lib RowMenu): the ⋯ itself unless the right-click said otherwise
     const back = state.previousFocus === undefined ? state.anchor : state.previousFocus;
@@ -857,37 +973,11 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
           <ul className="agent-list agent-list-pinned sidebar-pinned" aria-label={t("Pinned")}>{split.pinned.map((row) => agentItem(row))}</ul>
         </>}
         {/* one list, so a row that changes groups or parts is moved, not drawn anew: its focus and open menu stay with it */}
-        {(parts.people.length > 0 || parts.threads.length > 0 || parts.background.length > 0) && <ul className={`agent-list${groups || named ? " agent-list-grouped" : ""}`}>
+        {(parts.people.length > 0 || parts.threads.length > 0 || parts.background.length > 0) && <ul className={`agent-list${groups || named || projects ? " agent-list-grouped" : ""}`}>
           {/* one array of children: React moves a keyed row only among the siblings of its own array */}
-          {[...peopleItems,
-          ...parts.threads.length === 0 ? [] : [
-            <li className="agent-background-label" key="threads">
-              <button type="button" className="agent-background-toggle" aria-expanded={!threadsFolded} onClick={() => {
-                if (filter.active) { setThreadsFilterFold(!threadsFolded); return; }
-                setThreadsCollapsed(!threadsCollapsed);
-                try { window.localStorage.setItem(THREADS_FOLD_KEY, threadsCollapsed ? "0" : "1"); } catch { /* private mode: this page keeps it */ }
-              }}>
-                {threadsFolded ? <ChevronRight className="agent-section-caret" aria-hidden="true" /> : <ChevronDown className="agent-section-caret" aria-hidden="true" />}
-                {compact ? <span>{t("+{n} threads", { n: parts.threads.length })}</span>
-                  : <><span>{t("Threads")}</span><span className="agent-section-count">{parts.threads.length}</span></>}
-              </button>
-            </li>,
-            ...listItems(parts.threads, threadsFolded),
-          ],
-          ...parts.background.length === 0 ? [] : [
-            <li className="agent-background-label" key="background">
-              <button type="button" className="agent-background-toggle" aria-expanded={!backgroundFolded} onClick={() => {
-                if (filter.active) { setBackgroundFilterFold(!backgroundFolded); return; }
-                setBackgroundCollapsed(!backgroundCollapsed);
-                try { window.localStorage.setItem(BACKGROUND_FOLD_KEY, backgroundCollapsed ? "0" : "1"); } catch { /* private mode: this page keeps it */ }
-              }}>
-                {backgroundFolded ? <ChevronRight className="agent-section-caret" aria-hidden="true" /> : <ChevronDown className="agent-section-caret" aria-hidden="true" />}
-                {compact ? <span>{t("+{n} background", { n: parts.background.length })}</span>
-                  : <><span>{t("Background agents")}</span><span className="agent-section-count">{parts.background.length}</span></>}
-              </button>
-            </li>,
-            ...listItems(parts.background, backgroundFolded),
-          ]]}
+          {[...(projectSections ?? peopleItems),
+          ...(projectSections !== null || parts.threads.length === 0 ? [] : partItems("threads", parts.threads, threadsFolded, onToggleThreads)),
+          ...(projectSections !== null || parts.background.length === 0 ? [] : partItems("background", parts.background, backgroundFolded, onToggleBackground))]}
         </ul>}
       </>}
     </div>

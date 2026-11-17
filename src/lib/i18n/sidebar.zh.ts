@@ -18,6 +18,7 @@ export const SIDEBAR_ZH: Record<string, string> = {
   "Background agents": "后台代理",
   "+{n} background": "+{n} 后台",
   "Threads": "线程",
+  "No project": "未分项目",
   "+{n} threads": "+{n} 线程",
   "+{n} resting": "+{n} 空闲",
   "Background workspaces": "后台工作区",

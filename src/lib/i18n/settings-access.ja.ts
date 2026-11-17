@@ -41,6 +41,7 @@ export const SETTINGS_ACCESS_JA: Record<string, string> = {
   "The server cannot see whether a proxy, tunnel or router makes it reachable from the internet.": "プロキシ、トンネル、ルーターによってインターネットから接続できるかどうかは、サーバーからは分かりません。",
   "Named agent groups": "名前付きエージェントグループ",
   "Agents under workspaces": "ワークスペースの下にエージェント",
+  "Group agents by project": "プロジェクトでエージェントをまとめる",
   "ID {id}": "ID {id}",
   "Sign out of this PC": "この PC からサインアウト",
   "This app": "このアプリ",

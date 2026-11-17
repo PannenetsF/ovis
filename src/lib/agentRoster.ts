@@ -4,7 +4,7 @@
  * for it (lib/sidebarOrder.ts). A row is its PC and its pane: two PCs may reuse a pane id.
  */
 import type { Machine } from "../../shared/machines.ts";
-import { isBackgroundRole, isPrimaryRole, isThreadRole, isThreadSessionKind, PROJECT_ROLE_TOKEN, ROLE_TOKEN, SESSION_KIND_TOKEN } from "../../shared/pane-tokens.ts";
+import { isBackgroundRole, isPrimaryRole, isThreadRole, isThreadSessionKind, paneProject, PROJECT_ROLE_TOKEN, ROLE_TOKEN, SESSION_KIND_TOKEN } from "../../shared/pane-tokens.ts";
 import { sidebarAgents, type SidebarAgent } from "./sidebarAgents.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import type { AgentGroupSort } from "./settings.ts";
@@ -141,6 +141,59 @@ export function splitAgentRows(rows: readonly AgentRow[], status: (row: AgentRow
   return { people: nest(parts.people), threads: nest(parts.threads), background: nest(parts.background), hidden: nest(parts.hidden) };
 }
 
+/** A project the Agents list groups rows under: null holds the rows no token files under a project. */
+export interface AgentProjectGroup { project: string | null; rows: AgentRow[] }
+
+/** How urgently a project needs the reader: a blocked row beats a working one, anything else rests. */
+export type ProjectUrgency = "blocked" | "working" | "resting";
+
+const URGENCY_RANK: Record<ProjectUrgency, number> = { blocked: 0, working: 1, resting: 2 };
+
+/** The most urgent state any of a project's rows is in: blocked, working, or resting (done/idle). */
+export function projectUrgency(rows: readonly AgentRow[], status: (row: AgentRow) => AgentStatus | undefined): ProjectUrgency {
+  let urgency: ProjectUrgency = "resting";
+  for (const row of rows) {
+    const group = agentGroup(status(row));
+    const next: ProjectUrgency = group === "blocked" ? "blocked" : group === "working" ? "working" : "resting";
+    if (URGENCY_RANK[next] < URGENCY_RANK[urgency]) urgency = next;
+  }
+  return urgency;
+}
+
+/**
+ * The rows in their project groups: `hp_project` where a pane carries it, else the project encoded
+ * in `dn_group`, else the trailing null group. Each group keeps the rows' own order, so the
+ * people/threads/background parts and the state groups survive inside a project.
+ *
+ * With a `status` reader the groups order by urgency, the old board's needs → working → recent: a
+ * project holding a blocked row comes first, then one with work in flight, then the resting ones,
+ * ties kept in each project's first-seen order. Without one the groups stay first-seen.
+ */
+export function projectGroups(
+  rows: readonly AgentRow[],
+  status?: (row: AgentRow) => AgentStatus | undefined,
+): AgentProjectGroup[] {
+  const groups: AgentProjectGroup[] = [];
+  const index = new Map<string, number>();
+  const keyOf = (project: string | null): string => project ?? "";
+  for (const row of rows) {
+    const project = paneProject(row.entry.pane.tokens ?? row.entry.agent?.tokens);
+    const key = keyOf(project);
+    let at = index.get(key);
+    if (at === undefined) {
+      at = groups.length;
+      index.set(key, at);
+      groups.push({ project, rows: [] });
+    }
+    groups[at]!.rows.push(row);
+  }
+  if (status === undefined) return groups;
+  const firstSeen = new Map(groups.map((group, at) => [group, at]));
+  return groups
+    .map((group) => ({ group, rank: URGENCY_RANK[projectUrgency(group.rows, status)] }))
+    .sort((a, b) => a.rank - b.rank || firstSeen.get(a.group)! - firstSeen.get(b.group)!)
+    .map(({ group }) => group);
+}
 
 /** Settings → Group agents by state: the groups, in the order the list draws them */
 export const AGENT_GROUPS = ["blocked", "working", "done", "idle"] as const;

@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { Machine, MachineState } from "../../shared/machines.ts";
 import type { AgentStatus, HerdrPane, SessionSnapshot } from "../../shared/protocol.ts";
 import fixture from "../../site/demo/fixtures/machines.json";
-import { agentRoster, groupAgentRows, splitAgentRows, type AgentRow } from "./agentRoster.ts";
+import { agentRoster, groupAgentRows, projectGroups, splitAgentRows, type AgentRow } from "./agentRoster.ts";
 import { sidebarPinKey } from "./sidebarPins.ts";
 
 const template = fixture.machines[0]!.snapshot as SessionSnapshot;
@@ -208,5 +208,61 @@ describe("agent roster", () => {
         ["done", ["local/c", "local/d"]],
       ]);
     });
+  });
+});
+
+describe("grouped under herdr-projects' projects", () => {
+  const projectsOf = (machines: Machine[]) => {
+    const rows = agentRoster(machines, { byActivity: false, seqs: () => new Map(), pinned: [] }).rest;
+    return projectGroups(rows).map(({ project, rows: projectRows }) => [project, projectRows.map(({ machine, entry }) => `${machine.id}/${entry.pane.pane_id}`)] as const);
+  };
+
+  it("groups rows by hp_project in first-seen order, each keeping its own order", () => {
+    const machines = [machine("local", "connected", [
+      ["a", "idle", undefined, { hp_project: "nix-hm" }],
+      ["b", "idle", undefined, { hp_project: "lagrange-system" }],
+      ["c", "idle", undefined, { hp_project: "nix-hm" }],
+    ])];
+    expect(projectsOf(machines)).toEqual([
+      ["nix-hm", ["local/a", "local/c"]],
+      ["lagrange-system", ["local/b"]],
+    ]);
+  });
+
+  it("uses the dn_group project when hp_project is absent, and null for panes neither names", () => {
+    const machines = [machine("local", "connected", [
+      ["a", "idle", undefined, { dn_group: "machine-m1-nix-hm!1!wY:p1" }],
+      ["b", "idle", undefined, {}],
+      ["c", "idle", undefined, { hp_project: "lagrange-system", dn_group: "machine-m1-other!2!x" }],
+    ])];
+    expect(projectsOf(machines)).toEqual([
+      ["nix-hm", ["local/a"]],
+      [null, ["local/b"]],
+      ["lagrange-system", ["local/c"]],
+    ]);
+  });
+
+  const statusOf = ({ entry }: AgentRow): AgentStatus => entry.pane.agent_status;
+
+  it("orders projects by urgency with a status reader: blocked, then working, then resting, ties first-seen", () => {
+    const machines = [machine("local", "connected", [
+      ["a", "idle", undefined, { hp_project: "resting-first" }],
+      ["b", "working", undefined, { hp_project: "wip" }],
+      ["c", "blocked", undefined, { hp_project: "needs-you" }],
+      ["d", "idle", undefined, { hp_project: "resting-first" }],
+      ["e", "done", undefined, { hp_project: "resting-second" }],
+    ])];
+    const rows = agentRoster(machines, { byActivity: false, seqs: () => new Map(), pinned: [] }).rest;
+    expect(projectGroups(rows, statusOf).map(({ project }) => project)).toEqual(["needs-you", "wip", "resting-first", "resting-second"]);
+  });
+
+  it("promotes a whole project on its most urgent row and keeps first-seen within the same urgency", () => {
+    const machines = [machine("local", "connected", [
+      ["a", "idle", undefined, { hp_project: "alpha" }],
+      ["b", "idle", undefined, { hp_project: "beta" }],
+      ["c", "blocked", undefined, { hp_project: "beta" }],
+    ])];
+    const rows = agentRoster(machines, { byActivity: false, seqs: () => new Map(), pinned: [] }).rest;
+    expect(projectGroups(rows, statusOf).map(({ project }) => project)).toEqual(["beta", "alpha"]);
   });
 });

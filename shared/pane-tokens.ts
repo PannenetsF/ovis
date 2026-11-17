@@ -93,6 +93,26 @@ export function isThreadSessionKind(value: unknown): boolean {
   return typeof value === "string" && asciiLower(value.trim()) === "thread";
 }
 
+/**
+ * The project herdr-projects files a pane under, in the token it stamps for that (`hp_project`).
+ * A pane started outside herdr-projects has none of those: the coarser `dn_group` stamp still
+ * encodes the project (`machine-<id>-<project>!<n>!…`), so it is the fallback, never an override.
+ */
+export const PROJECT_TOKEN = "hp_project";
+
+const GROUP_TOKEN = "dn_group";
+const GROUP_PROJECT = /^machine-[^-]+-(.+?)!\d+!/;
+
+/** The project a pane's tokens name, or null where neither stamp names one. */
+export function paneProject(tokens: Readonly<Record<string, unknown>> | null | undefined): string | null {
+  if (!tokens) return null;
+  const named = tokens[PROJECT_TOKEN];
+  if (typeof named === "string" && named.trim()) return named.trim();
+  const group = tokens[GROUP_TOKEN];
+  if (typeof group === "string") return GROUP_PROJECT.exec(group)?.[1] ?? null;
+  return null;
+}
+
 /** Whether a rule's condition holds for a token's whole value, as herdr's sidebar tests it. */
 export function paneTokenRuleMatches(rule: PaneTokenRule, value: string): boolean {
   if (rule.gt !== undefined || rule.lt !== undefined) {

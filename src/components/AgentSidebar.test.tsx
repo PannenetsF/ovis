@@ -1215,4 +1215,78 @@ describe("AgentSidebar fold memory", () => {
     // Then every row is back where it stands without a filter: the blocked one first, the resting ones folded.
     expect(drawnEntries()).toEqual(["w1D:p1", paneId, "RESTING"]);
   });
+
+  describe("project grouping", () => {
+    /** panes carrying the given tokens, the rest with none; agent statuses are the fixture's */
+    const withProjects = (tokens: Record<string, Record<string, string>>) => roster().map((machine) => machine.snapshot === null ? machine : {
+      ...machine,
+      snapshot: { ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => ({ ...pane, tokens: tokens[pane.pane_id] ?? {} })) },
+    });
+    const twoProjects: Record<string, Record<string, string>> = {
+      "w1C:p1": { hp_project: "nix-hm" },
+      "w1D:p1": { hp_project: "nix-hm" },
+      "w1E:p1": { hp_project: "lagrange-system" },
+      "w1F:p1": { dn_group: "machine-m1-lagrange-system!1!x" },
+    };
+    const projectHeadings = () => renderer!.root.findAll((node) => node.type === "li" && typeof node.props.className === "string" && node.props.className.includes("agent-project-group-label"));
+    const heading = (project: string) => projectHeadings().find((node) => node.props["data-project-group"] === project)!;
+    const hiddenPanes = () => renderer!.root.findAll((node) => node.type === "li" && node.props["data-pane"] !== undefined && node.props.hidden === true).map((node) => node.props["data-pane"]);
+
+    it("draws no project heading while the setting is off", async () => {
+      await act(async () => { renderer = create(groupedList(inactive, withProjects(twoProjects))); });
+      expect(projectHeadings()).toHaveLength(0);
+      await act(async () => { renderer?.unmount(); });
+    });
+
+    it("groups rows under their project's heading, reading dn_group for the one hp_project does not name", async () => {
+      stored.set("ovis:settings", JSON.stringify({ agentProjectGroups: true, agentOrder: "workspace" }));
+      await act(async () => { renderer = create(groupedList(inactive, withProjects(twoProjects))); });
+      expect(projectHeadings().map((node) => node.props["data-project-group"])).toEqual(["nix-hm", "lagrange-system"]);
+      expect(heading("nix-hm").findByType("button").findByProps({ className: "agent-section-count" }).children).toEqual(["2"]);
+      expect(heading("lagrange-system").findByType("button").findByProps({ className: "agent-section-count" }).children).toEqual(["2"]);
+      await act(async () => { renderer?.unmount(); });
+    });
+
+    it("stays flat with a single project, even with the setting on", async () => {
+      stored.set("ovis:settings", JSON.stringify({ agentProjectGroups: true, agentOrder: "workspace" }));
+      const one = withProjects({ "w1C:p1": { hp_project: "nix-hm" }, "w1D:p1": { hp_project: "nix-hm" }, "w1E:p1": { hp_project: "nix-hm" }, "w1F:p1": { hp_project: "nix-hm" } });
+      await act(async () => { renderer = create(groupedList(inactive, one)); });
+      expect(projectHeadings()).toHaveLength(0);
+      await act(async () => { renderer?.unmount(); });
+    });
+
+    it("folds a project's rows from its heading, keeps the choice, and keeps a selected row in sight", async () => {
+      stored.set("ovis:settings", JSON.stringify({ agentProjectGroups: true, agentOrder: "workspace" }));
+      await act(async () => { renderer = create(groupedList(inactive, withProjects(twoProjects))); });
+      const toggle = () => heading("nix-hm").findByType("button");
+      expect(toggle().props["aria-expanded"]).toBe(true);
+      await act(async () => { toggle().props.onClick(); });
+      expect(toggle().props["aria-expanded"]).toBe(false);
+      expect(hiddenPanes()).toEqual(["w1C:p1", "w1D:p1"]);
+      expect(JSON.parse(stored.get("ovis:agent-project-folds")!)).toEqual(["nix-hm"]);
+      await act(async () => { renderer!.unmount(); });
+      // a selected row of the folded project stays visible, as under a state fold
+      const selecting = (pane: string) => <SettingsProvider>
+        <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+          <AgentSidebar machines={withProjects(twoProjects)} selectedMachineId="local" selectedPaneId={pane} stateWord={(machine) => machine.state} onSelect={() => {}} />
+        </SidebarFilterProvider>
+      </SettingsProvider>;
+      await act(async () => { renderer = create(selecting("w1C:p1")); });
+      expect(hiddenPanes()).toEqual(["w1D:p1"]);
+      await act(async () => { renderer?.unmount(); });
+    });
+
+    it("keeps the threads fold inside its own project's section", async () => {
+      stored.set("ovis:settings", JSON.stringify({ agentProjectGroups: true, agentOrder: "workspace" }));
+      // w1C is working, so its thread row stays in the threads part; a blocked one (w1D) would move to people
+      const withThread: Record<string, Record<string, string>> = { ...twoProjects, "w1C:p1": { hp_role: "thread", hp_project: "nix-hm" } };
+      await act(async () => { renderer = create(groupedList(inactive, withProjects(withThread))); });
+      const order = () => renderer!.root.findAll((node) => node.type === "li" && (node.props["data-project-group"] !== undefined || node.props["data-pane"] !== undefined || node.props.className === "agent-background-label"))
+        .map((node) => node.props["data-project-group"] ?? node.props["data-pane"] ?? "THREADS");
+      const drawn = order();
+      expect(drawn.indexOf("nix-hm")).toBeLessThan(drawn.indexOf("THREADS"));
+      expect(drawn.indexOf("THREADS")).toBeLessThan(drawn.indexOf("lagrange-system"));
+      await act(async () => { renderer?.unmount(); });
+    });
+  });
 });

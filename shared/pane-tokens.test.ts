@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { paneTokenRuleMatches, paneTokenValues, type AgentRowTokens } from "./pane-tokens.ts";
+import { paneProject, paneTokenRuleMatches, paneTokenValues, type AgentRowTokens } from "./pane-tokens.ts";
 
 describe("paneTokenValues", () => {
   const tokens = { quota: "5h 95% · Wk 67%", summary: "reviewing auth", progress: "40% 12m" };
@@ -81,5 +81,30 @@ describe("paneTokenRuleMatches", () => {
 
   test("a rule without a condition matches nothing", () => {
     expect(paneTokenRuleMatches({ hide: true }, "anything")).toBe(false);
+  });
+});
+
+describe("paneProject", () => {
+  test("names the hp_project the pane carries, trimmed", () => {
+    expect(paneProject({ hp_project: " lagrange-system " })).toBe("lagrange-system");
+    // a blank hp_project is no name, so the coarse stamp gets its turn
+    expect(paneProject({ hp_project: "  ", dn_group: "machine-abc-nix-hm!1!wY:p1" })).toBe("nix-hm");
+  });
+
+  test("falls back to the project encoded in dn_group when hp_project is absent", () => {
+    expect(paneProject({ dn_group: "machine-7f33-lagrange-system!1!wY:p1" })).toBe("lagrange-system");
+    // the project slug may itself contain dashes; only the machine prefix and the !<n>! suffix are structural
+    expect(paneProject({ dn_group: "machine-m1-a-b-c!42!t1" })).toBe("a-b-c");
+  });
+
+  test("says nothing where neither stamp names a project", () => {
+    expect(paneProject({ dn_group: "not-a-group-stamp" })).toBeNull();
+    expect(paneProject({})).toBeNull();
+    expect(paneProject(null)).toBeNull();
+    expect(paneProject(undefined)).toBeNull();
+  });
+
+  test("never lets dn_group override hp_project", () => {
+    expect(paneProject({ hp_project: "nix-hm", dn_group: "machine-m1-lagrange-system!1!x" })).toBe("nix-hm");
   });
 });
