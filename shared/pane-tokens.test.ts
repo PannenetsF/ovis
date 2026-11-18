@@ -54,6 +54,22 @@ describe("paneTokenValues", () => {
     expect(paneTokenValues(layout, null, { quota: "unknown", progress: "40% 12m" })).toEqual(["40% 12m", "unknown"]);
     expect(paneTokenValues(layout, null, { quota: "5h 95%", progress: "40% 12m" })).toEqual(["5h 95%", "40% 12m"]);
   });
+
+  test("an icon-font-only glyph is left out, whether the config names rows or not", () => {
+    // herdr-radar's TUI logo (U+E1A0) and state (U+E1C2); one padded with spaces and a zero-width space
+    const logo = String.fromCharCode(0xe1a0);
+    const state = String.fromCharCode(0xe1c2);
+    const zeroWidthSpace = String.fromCharCode(0x200b);
+    const tokens = { logo_working: logo, state_working: state, logo_stale: `${zeroWidthSpace}  ${logo}`, summary: "reviewing auth" };
+    expect(paneTokenValues(null, "claude", tokens)).toEqual(["reviewing auth"]);
+    const layout: AgentRowTokens = { rows: [{ name: "logo_working" }, { name: "state_working" }, { name: "summary" }], by_agent: {} };
+    expect(paneTokenValues(layout, "claude", tokens)).toEqual(["reviewing auth"]);
+  });
+
+  test("a glyph mixed with real text still shows, since the words carry the meaning", () => {
+    const logo = String.fromCharCode(0xe1a0);
+    expect(paneTokenValues(null, "claude", { mark: `${logo} build`, plain: "ok" })).toEqual([`${logo} build`, "ok"]);
+  });
 });
 
 describe("paneTokenRuleMatches", () => {

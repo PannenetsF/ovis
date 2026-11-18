@@ -133,11 +133,27 @@ export function paneTokenSpecs(layout: AgentRowTokens | null, agent: string | nu
   return (layout && agent !== null && Object.hasOwn(layout.by_agent, agent) ? layout.by_agent[agent] : undefined) ?? layout?.rows ?? null;
 }
 
+/** The private-use areas icon fonts (Nerd Font, herdr-radar's agent-icon face) put their glyphs in. */
+const ICON_FONT_GLYPH = /[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u;
+/** A glyph plus only spacing and zero-width/selector marks: the whole of an icon-only token value. */
+const GLYPH_VALUE_NON_TEXT = /[\s\u{200B}-\u{206F}\u{FE00}-\u{FE0F}\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/gu;
+
+/**
+ * Whether a token value is only an icon-font glyph, never words. herdr-radar reports its sidebar
+ * logo and state as private-use glyphs (`logo_working`, `state_idle_stale`, …) for herdr's TUI
+ * icon face; the web UI draws its own agent mark and status badge and has no face for that glyph,
+ * so an all-glyph value would show as a missing-glyph box and is left out. A glyph mixed with real
+ * text still shows, since the words carry meaning.
+ */
+function isGlyphOnlyValue(value: string): boolean {
+  return ICON_FONT_GLYPH.test(value) && value.replace(GLYPH_VALUE_NON_TEXT, "").length === 0;
+}
+
 /**
  * What a pane's tokens say on its agent row, in the order the row draws them: the tokens the
  * agent's herdr rows name, or every token (by name) where the config names none. A missing or
- * blank token says nothing, and neither does one a matching rule hides, nor, where the config names
- * none, the background tag (`role=background`). A token the rows name twice
+ * blank token says nothing, and neither does one a matching rule hides, an icon-font-only glyph,
+ * nor, where the config names none, the background tag (`role=background`). A token the rows name twice
  * is said once, at the first place whose rules leave it shown. The values are text the row writes as
  * it is, never markup.
  */
@@ -147,14 +163,23 @@ export function paneTokenValues(layout: AgentRowTokens | null, agent: string | n
     const value = Object.hasOwn(tokens, name) ? tokens[name] : undefined;
     return typeof value === "string" && value.trim() ? value : null;
   };
+  // an icon-font-only value carries no words the web row can draw: leave it for the TUI's face
+  const sayable = (name: string): string | null => {
+    const value = valueOf(name);
+    return value !== null && !isGlyphOnlyValue(value) ? value.trim() : null;
+  };
   const specs = paneTokenSpecs(layout, agent);
   // the background tag already says where the row stands: a row drawing every token leaves it out
-  if (specs === null) return Object.keys(tokens).sort().flatMap((name) => name === ROLE_TOKEN && isBackgroundRole(tokens[name]) ? [] : valueOf(name)?.trim() ?? []);
+  if (specs === null) return Object.keys(tokens).sort().flatMap((name) => {
+    if (name === ROLE_TOKEN && isBackgroundRole(tokens[name])) return [];
+    const value = sayable(name);
+    return value === null ? [] : [value];
+  });
   const shown: string[] = [];
   const said = new Set<string>();
   for (const { name, rules } of specs) {
     if (said.has(name)) continue;
-    const value = valueOf(name);
+    const value = sayable(name);
     if (value === null || rules?.find((rule) => paneTokenRuleMatches(rule, value))?.hide) continue;
     said.add(name);
     shown.push(value.trim());
